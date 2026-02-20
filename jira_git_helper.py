@@ -20,9 +20,9 @@ from jira import JIRA, JIRAError
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.coordinate import Coordinate
-from textual.containers import Vertical
+from textual.containers import Vertical, ScrollableContainer
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, Footer, Input, Label
+from textual.widgets import DataTable, Footer, Input, Label, Static
 
 # --- paths ---
 
@@ -399,7 +399,8 @@ class PrPickerApp(App):
 
     BINDINGS = [
         Binding("escape", "quit", "Quit"),
-        Binding("enter", "select_pr", "Open", show=True),
+        Binding("o", "open_pr", "Open", show=True),
+        Binding("d", "show_diff", "Diff", show=True),
         Binding("slash", "activate_filter", "Filter", show=True),
     ]
 
@@ -478,7 +479,7 @@ class PrPickerApp(App):
         elif event.key == "up":
             table.move_cursor(row=table.cursor_row - 1)
             event.prevent_default()
-        elif event.key == "enter":
+        elif event.key == "enter" and not self.open_on_enter:
             self.action_select_pr()
             event.prevent_default()
         elif event.key == "escape" and filter_bar.display:
@@ -492,19 +493,37 @@ class PrPickerApp(App):
         filter_bar.display = True
         filter_bar.focus()
 
-    def action_select_pr(self) -> None:
+    def _selected_pr(self) -> dict | None:
         table = self.query_one(DataTable)
         if table.row_count == 0:
-            return
+            return None
         cell_key = table.coordinate_to_cell_key(Coordinate(table.cursor_row, 0))
-        pr = self.prs[int(cell_key.row_key.value)]
-        if self.open_on_enter:
-            url = pr.get("url", "")
-            if url:
-                webbrowser.open(url)
-        else:
-            self.selected_pr = pr
-            self.exit()
+        return self.prs[int(cell_key.row_key.value)]
+
+    def action_open_pr(self) -> None:
+        if isinstance(self.focused, Input):
+            return
+        pr = self._selected_pr()
+        if pr is None:
+            return
+        url = pr.get("url", "")
+        if url:
+            webbrowser.open(url)
+
+    def action_select_pr(self) -> None:
+        pr = self._selected_pr()
+        if pr is None:
+            return
+        self.selected_pr = pr
+        self.exit()
+
+    def action_show_diff(self) -> None:
+        if isinstance(self.focused, Input):
+            return
+        pr = self._selected_pr()
+        if pr is None:
+            return
+        self.push_screen(DiffModal(pr))
 
     def action_quit(self) -> None:
         self.exit()
@@ -787,6 +806,190 @@ class CommitModal(ModalScreen):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+
+class DiffModal(ModalScreen):
+    CSS = """
+    DiffModal { background: $background 80%; }
+    #diff-scroll { width: 100%; height: 1fr; border: thick $accent; }
+    #diff-content { padding: 0; }
+    #search-bar { display: none; }
+    #search-status {
+        display: none;
+        background: $warning 70%;
+        color: $text;
+        padding: 0 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("slash", "activate_search", "Search", show=True),
+        Binding("n", "next_file", "Next file", show=True),
+        Binding("p", "prev_file", "Prev file", show=True),
+    ]
+
+    def __init__(self, pr: dict) -> None:
+        super().__init__()
+        self.pr = pr
+        self._raw_lines: list[str] = []
+        self._file_starts: list[int] = []  # line indices of "diff --git" headers
+        self._base_ansi: str = ""
+        self._search_query: str = ""
+        self._match_lines: list[int] = []
+        self._match_idx: int = -1
+        self._file_idx: int = 0
+
+    def compose(self) -> ComposeResult:
+        with ScrollableContainer(id="diff-scroll"):
+            yield Static("Loading diff…", id="diff-content")
+        yield Input(id="search-bar", placeholder="Search…")
+        yield Static("", id="search-status")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.run_worker(self._fetch_diff, thread=True)
+
+    def _fetch_diff(self) -> None:
+        url = self.pr.get("url", "")
+        if not url:
+            self.app.call_from_thread(self._set_content, "No PR URL available.")
+            return
+        result = subprocess.run(
+            ["gh", "pr", "diff", url],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0 or not result.stdout:
+            self.app.call_from_thread(self._set_content, "No diff available.")
+            return
+        raw = result.stdout
+        self._raw_lines = raw.splitlines()
+        self._file_starts = [
+            i for i, line in enumerate(self._raw_lines)
+            if line.startswith("diff --git")
+        ]
+        if shutil.which("delta"):
+            delta = subprocess.run(
+                ["delta", "--color-only"],
+                input=raw,
+                capture_output=True,
+                text=True,
+            )
+            self._base_ansi = delta.stdout if delta.returncode == 0 else raw
+        else:
+            from rich.syntax import Syntax
+            from rich.console import Console
+            from io import StringIO
+            buf = StringIO()
+            Console(file=buf, force_terminal=True, width=220, highlight=False).print(
+                Syntax(raw, "diff", theme="monokai")
+            )
+            self._base_ansi = buf.getvalue()
+        self.app.call_from_thread(self._refresh_display)
+
+    def _refresh_display(self) -> None:
+        from rich.text import Text as RichText
+        content = RichText.from_ansi(self._base_ansi)
+        if self._search_query:
+            plain = content.plain
+            query_lower = self._search_query.lower()
+            plain_lower = plain.lower()
+            pos = 0
+            while True:
+                idx = plain_lower.find(query_lower, pos)
+                if idx == -1:
+                    break
+                content.stylize("black on yellow", idx, idx + len(self._search_query))
+                pos = idx + len(self._search_query)
+        self.query_one("#diff-content", Static).update(content)
+
+    def _set_content(self, content) -> None:
+        self.query_one("#diff-content", Static).update(content)
+
+    def _update_search_status(self) -> None:
+        status = self.query_one("#search-status", Static)
+        if not self._search_query:
+            status.display = False
+            return
+        count = len(self._match_lines)
+        if count:
+            current = self._match_idx + 1
+            status.update(f" Search: [bold]{self._search_query}[/bold]  {current}/{count} matches — [dim]Enter[/dim] next  [dim]Esc[/dim] clear ")
+        else:
+            status.update(f" Search: [bold]{self._search_query}[/bold]  no matches — [dim]Esc[/dim] clear ")
+        status.display = True
+
+    def _scroll_to_line(self, line_idx: int) -> None:
+        self.query_one("#diff-scroll", ScrollableContainer).scroll_to(y=line_idx, animate=False)
+
+    def action_activate_search(self) -> None:
+        bar = self.query_one("#search-bar", Input)
+        bar.display = True
+        bar.focus()
+
+    def action_close(self) -> None:
+        bar = self.query_one("#search-bar", Input)
+        if bar.display:
+            # Cancel search input — don't commit, keep any existing committed search
+            bar.display = False
+            bar.value = ""
+        elif self._search_query:
+            # Clear committed search
+            self._search_query = ""
+            self._match_lines = []
+            self._match_idx = -1
+            self._refresh_display()
+            self._update_search_status()
+        else:
+            self.dismiss()
+
+    def on_key(self, event) -> None:
+        if event.key == "enter":
+            bar = self.query_one("#search-bar", Input)
+            if bar.display and bar.has_focus:
+                self._commit_search(bar.value)
+            else:
+                self.action_next_match()
+            event.prevent_default()
+
+    def _commit_search(self, raw_query: str) -> None:
+        query = raw_query.strip()
+        bar = self.query_one("#search-bar", Input)
+        bar.display = False
+        bar.value = ""
+        if not query:
+            return
+        self._search_query = query
+        query_lower = query.lower()
+        self._match_lines = [
+            i for i, line in enumerate(self._raw_lines)
+            if query_lower in line.lower()
+        ]
+        self._match_idx = 0 if self._match_lines else -1
+        self._refresh_display()
+        self._update_search_status()
+        if self._match_idx >= 0:
+            self._scroll_to_line(self._match_lines[0])
+
+    def action_next_match(self) -> None:
+        if not self._match_lines:
+            return
+        self._match_idx = (self._match_idx + 1) % len(self._match_lines)
+        self._update_search_status()
+        self._scroll_to_line(self._match_lines[self._match_idx])
+
+    def action_next_file(self) -> None:
+        if not self._file_starts:
+            return
+        self._file_idx = min(self._file_idx + 1, len(self._file_starts) - 1)
+        self._scroll_to_line(self._file_starts[self._file_idx])
+
+    def action_prev_file(self) -> None:
+        if not self._file_starts:
+            return
+        self._file_idx = max(self._file_idx - 1, 0)
+        self._scroll_to_line(self._file_starts[self._file_idx])
 
 
 class FilePickerApp(App):

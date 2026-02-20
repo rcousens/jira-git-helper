@@ -400,29 +400,9 @@ request" URL during the push, it opens that instead.
 
 ---
 
-### `jg diff [TICKET]`
-
-Show a diff of an open or draft PR linked to the ticket, using the `gh` CLI.
-
-```sh
-jg diff            # uses the active ticket
-jg diff SWY-5678   # diff PRs for any ticket
-```
-
-If multiple PRs are found, an interactive picker lets you choose one (supports `/`
-to filter by status, repo, branch, or title).
-
-| Flag | Description |
-|---|---|
-| `--all` | Include merged and declined PRs, not just open/draft ones |
-
-> **Requires:** [`gh` CLI](https://cli.github.com) installed and authenticated.
-
----
-
 ### `jg prs [TICKET]`
 
-Browse all GitHub PRs linked to a ticket in an interactive TUI.
+Browse all GitHub PRs linked to a ticket in an interactive TUI, with inline diff viewing.
 
 ```sh
 jg prs             # uses the active ticket
@@ -439,8 +419,31 @@ ones first, then by last-updated date. Status is colour-coded: green (open), yel
 |---|---|
 | `↑` / `↓` | Move between PRs |
 | `/` | Open filter bar — searches status, author, repo, branch, and title |
-| `Enter` | Open the highlighted PR in your browser |
+| `o` | Open the highlighted PR in your browser |
+| `d` | View the PR diff inline |
 | `Escape` | Close filter / quit |
+
+**Diff viewer:**
+
+Press `d` on any PR (open or merged) to open a full-screen diff viewer. If
+[`delta`](https://github.com/dandavison/delta) is installed it is used for
+syntax-aware colouring; otherwise Rich syntax highlighting is applied.
+
+| Key | Action |
+|---|---|
+| `↑` / `↓` | Scroll the diff |
+| `/` | Open search bar — type a term and press `Enter` to commit the search |
+| `Enter` | Jump to the next match (cycles through all matches) |
+| `n` | Jump to the next file in the diff |
+| `p` | Jump to the previous file in the diff |
+| `Escape` | Clear active search, or close the diff viewer |
+
+An active search is shown in an amber status bar above the footer, displaying the
+search term and current position (e.g. `Search: foo  3/7 matches — Enter next  Esc clear`).
+All matches are highlighted inline. Press `Escape` once to clear the search, and
+again to close the diff viewer.
+
+> **Requires:** [`gh` CLI](https://cli.github.com) installed and authenticated.
 
 ---
 
@@ -533,7 +536,7 @@ jg --version
 ## Requirements
 
 - Python 3.10+
-- `gh` CLI — only required for `jg diff` — https://cli.github.com
+- `gh` CLI — required for PR diff viewing in `jg prs` — https://cli.github.com
 
 ---
 
