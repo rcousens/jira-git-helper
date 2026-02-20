@@ -232,18 +232,21 @@ def fetch_issues_for_projects(
 
 class JiraListApp(App):
     CSS = """
-    Input {
-        dock: top;
-        border: tall $accent;
-    }
     DataTable {
         height: 1fr;
+    }
+    #filter-bar {
+        dock: bottom;
+        display: none;
+        border: tall $accent;
+        margin-bottom: 1;
     }
     """
 
     BINDINGS = [
         Binding("escape", "quit", "Quit"),
         Binding("enter", "select_ticket", "Select", show=True),
+        Binding("slash", "activate_filter", "Filter", show=True),
     ]
 
     def __init__(self, issues: list) -> None:
@@ -253,8 +256,8 @@ class JiraListApp(App):
         self.selected_ticket: str | None = None
 
     def compose(self) -> ComposeResult:
-        yield Input(placeholder="Filter tickets…")
         yield DataTable(cursor_type="row", zebra_stripes=True)
+        yield Input(id="filter-bar", placeholder="Filter…")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -264,7 +267,7 @@ class JiraListApp(App):
         table.add_column("Assignee", width=24)
         table.add_column("Summary")
         self._populate_table(self.all_issues)
-        self.query_one(Input).focus()
+        table.focus()
 
     def _populate_table(self, issues: list) -> None:
         table = self.query_one(DataTable)
@@ -306,6 +309,21 @@ class JiraListApp(App):
         self._populate_table(filtered)
 
     def on_key(self, event) -> None:
+        focused = self.focused
+        if isinstance(focused, Input):
+            if event.key == "escape":
+                focused.value = ""
+                focused.display = False
+                self._populate_table(self.all_issues)
+                self.query_one(DataTable).focus()
+                event.prevent_default()
+                return
+            if event.key == "enter":
+                self.query_one(DataTable).focus()
+                event.prevent_default()
+                return
+
+        filter_bar = self.query_one("#filter-bar", Input)
         table = self.query_one(DataTable)
         if event.key == "down":
             table.move_cursor(row=table.cursor_row + 1)
@@ -316,6 +334,16 @@ class JiraListApp(App):
         elif event.key == "enter":
             self.action_select_ticket()
             event.prevent_default()
+        elif event.key == "escape" and filter_bar.display:
+            filter_bar.value = ""
+            filter_bar.display = False
+            self._populate_table(self.all_issues)
+            event.prevent_default()
+
+    def action_activate_filter(self) -> None:
+        filter_bar = self.query_one("#filter-bar", Input)
+        filter_bar.display = True
+        filter_bar.focus()
 
     def action_select_ticket(self) -> None:
         table = self.query_one(DataTable)
@@ -361,44 +389,88 @@ def _get_prs(issue_id: str) -> list[dict]:
 class PrPickerApp(App):
     CSS = """
     DataTable { height: 1fr; }
+    #filter-bar {
+        dock: bottom;
+        display: none;
+        border: tall $accent;
+        margin-bottom: 1;
+    }
     """
 
     BINDINGS = [
         Binding("escape", "quit", "Quit"),
-        Binding("enter", "select_pr", "Select", show=True),
+        Binding("enter", "select_pr", "Open", show=True),
+        Binding("slash", "activate_filter", "Filter", show=True),
     ]
 
-    def __init__(self, prs: list[dict]) -> None:
+    def __init__(self, prs: list[dict], *, open_on_enter: bool = False) -> None:
         super().__init__()
         self.prs = prs
         self.selected_pr: dict | None = None
+        self.open_on_enter = open_on_enter
 
     def compose(self) -> ComposeResult:
         yield DataTable(cursor_type="row", zebra_stripes=True)
+        yield Input(id="filter-bar", placeholder="Filter…")
         yield Footer()
 
     def on_mount(self) -> None:
-        from rich.text import Text as RichText
-
         table = self.query_one(DataTable)
         table.add_column("Status", width=10)
-        table.add_column("Repo", width=24)
-        table.add_column("Source branch", width=32)
+        table.add_column("Author", width=20)
+        table.add_column("Repo", width=20)
+        table.add_column("Source branch", width=26)
         table.add_column("Title")
+        self._populate_table(list(enumerate(self.prs)))
+        table.focus()
 
-        for i, pr in enumerate(self.prs):
+    def _populate_table(self, indexed_prs: list[tuple[int, dict]]) -> None:
+        from rich.text import Text as RichText
+        table = self.query_one(DataTable)
+        table.clear()
+        for i, pr in indexed_prs:
             status = pr.get("status", "")
             style = PR_STATUS_STYLES.get(status, "white")
+            author = pr.get("author", {}).get("name", "")
             table.add_row(
                 RichText(status, style=style),
+                author,
                 pr.get("repositoryName", ""),
                 pr.get("source", {}).get("branch", ""),
                 pr.get("name", ""),
                 key=str(i),
             )
-        table.focus()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        search = event.value.lower()
+        if not search:
+            self._populate_table(list(enumerate(self.prs)))
+            return
+        self._populate_table([
+            (i, p) for i, p in enumerate(self.prs)
+            if search in p.get("status", "").lower()
+            or search in p.get("author", {}).get("name", "").lower()
+            or search in p.get("repositoryName", "").lower()
+            or search in p.get("source", {}).get("branch", "").lower()
+            or search in p.get("name", "").lower()
+        ])
 
     def on_key(self, event) -> None:
+        focused = self.focused
+        if isinstance(focused, Input):
+            if event.key == "escape":
+                focused.value = ""
+                focused.display = False
+                self._populate_table(list(enumerate(self.prs)))
+                self.query_one(DataTable).focus()
+                event.prevent_default()
+                return
+            if event.key == "enter":
+                self.query_one(DataTable).focus()
+                event.prevent_default()
+                return
+
+        filter_bar = self.query_one("#filter-bar", Input)
         table = self.query_one(DataTable)
         if event.key == "down":
             table.move_cursor(row=table.cursor_row + 1)
@@ -409,14 +481,30 @@ class PrPickerApp(App):
         elif event.key == "enter":
             self.action_select_pr()
             event.prevent_default()
+        elif event.key == "escape" and filter_bar.display:
+            filter_bar.value = ""
+            filter_bar.display = False
+            self._populate_table(list(enumerate(self.prs)))
+            event.prevent_default()
+
+    def action_activate_filter(self) -> None:
+        filter_bar = self.query_one("#filter-bar", Input)
+        filter_bar.display = True
+        filter_bar.focus()
 
     def action_select_pr(self) -> None:
         table = self.query_one(DataTable)
         if table.row_count == 0:
             return
         cell_key = table.coordinate_to_cell_key(Coordinate(table.cursor_row, 0))
-        self.selected_pr = self.prs[int(cell_key.row_key.value)]
-        self.exit()
+        pr = self.prs[int(cell_key.row_key.value)]
+        if self.open_on_enter:
+            url = pr.get("url", "")
+            if url:
+                webbrowser.open(url)
+        else:
+            self.selected_pr = pr
+            self.exit()
 
     def action_quit(self) -> None:
         self.exit()
@@ -554,18 +642,21 @@ def _get_local_branches() -> list[tuple[str, bool]]:
 
 class BranchPickerApp(App):
     CSS = """
-    Input {
-        dock: top;
-        border: tall $accent;
-    }
     DataTable {
         height: 1fr;
+    }
+    #filter-bar {
+        dock: bottom;
+        display: none;
+        border: tall $accent;
+        margin-bottom: 1;
     }
     """
 
     BINDINGS = [
         Binding("escape", "quit", "Quit"),
         Binding("enter", "select_branch", "Switch", show=True),
+        Binding("slash", "activate_filter", "Filter", show=True),
     ]
 
     def __init__(self, branches: list[tuple[str, bool]]) -> None:
@@ -574,8 +665,8 @@ class BranchPickerApp(App):
         self.selected_branch: str | None = None
 
     def compose(self) -> ComposeResult:
-        yield Input(placeholder="Filter branches…")
         yield DataTable(cursor_type="row", zebra_stripes=True)
+        yield Input(id="filter-bar", placeholder="Filter…")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -583,7 +674,7 @@ class BranchPickerApp(App):
         table.add_column("", width=2)      # current marker
         table.add_column("Branch")
         self._populate_table(self.all_branches)
-        self.query_one(Input).focus()
+        table.focus()
 
     def _populate_table(self, branches: list[tuple[str, bool]]) -> None:
         from rich.text import Text as RichText
@@ -604,6 +695,21 @@ class BranchPickerApp(App):
         self._populate_table(filtered)
 
     def on_key(self, event) -> None:
+        focused = self.focused
+        if isinstance(focused, Input):
+            if event.key == "escape":
+                focused.value = ""
+                focused.display = False
+                self._populate_table(self.all_branches)
+                self.query_one(DataTable).focus()
+                event.prevent_default()
+                return
+            if event.key == "enter":
+                self.query_one(DataTable).focus()
+                event.prevent_default()
+                return
+
+        filter_bar = self.query_one("#filter-bar", Input)
         table = self.query_one(DataTable)
         if event.key == "down":
             table.move_cursor(row=table.cursor_row + 1)
@@ -614,6 +720,16 @@ class BranchPickerApp(App):
         elif event.key == "enter":
             self.action_select_branch()
             event.prevent_default()
+        elif event.key == "escape" and filter_bar.display:
+            filter_bar.value = ""
+            filter_bar.display = False
+            self._populate_table(self.all_branches)
+            event.prevent_default()
+
+    def action_activate_filter(self) -> None:
+        filter_bar = self.query_one("#filter-bar", Input)
+        filter_bar.display = True
+        filter_bar.focus()
 
     def action_select_branch(self) -> None:
         table = self.query_one(DataTable)
@@ -701,6 +817,7 @@ class FilePickerApp(App):
         Binding("escape", "quit", "Cancel"),
         Binding("space", "toggle_select", "Toggle", show=True),
         Binding("enter", "confirm", "Commit", show=True),
+        Binding("slash", "activate_filter", "Filter", show=True),
     ]
 
     def __init__(
@@ -830,20 +947,19 @@ class FilePickerApp(App):
         elif event.key == "enter":
             self.action_confirm()
             event.prevent_default()
-        else:
-            # Any printable character (or /) activates the filter for this section
-            char = event.character
-            if char and char != " " and char.isprintable():
-                filter_id = f"filter-{table.id}"
-                try:
-                    filter_input = self.query_one(f"#{filter_id}", Input)
-                    filter_input.display = True
-                    filter_input.value = char
-                    filter_input.cursor_position = len(char)
-                    filter_input.focus()
-                    event.prevent_default()
-                except Exception:
-                    pass
+
+    def action_activate_filter(self) -> None:
+        table = self._focused_table()
+        if table is None:
+            return
+        filter_id = f"filter-{table.id}"
+        try:
+            filter_input = self.query_one(f"#{filter_id}", Input)
+            filter_input.display = True
+            filter_input.value = ""
+            filter_input.focus()
+        except Exception:
+            pass
 
     def _rebuild_table(self, table: DataTable, files: list[tuple[str, str]], selected: set[str]) -> None:
         from rich.text import Text as RichText
@@ -1253,12 +1369,7 @@ def cmd_diff(ticket: str | None, show_all: bool) -> None:
 @main.command("prs")
 @click.argument("ticket", required=False)
 def cmd_prs(ticket: str | None) -> None:
-    """List all PRs linked to the current (or given) ticket."""
-    from rich import box
-    from rich.console import Console
-    from rich.table import Table
-    from rich.text import Text
-
+    """Browse PRs linked to the current (or given) ticket. Press Enter to open in browser."""
     key = ticket or ensure_ticket()
 
     jira = get_jira_client()
@@ -1277,27 +1388,8 @@ def cmd_prs(ticket: str | None) -> None:
         click.echo(f"No PRs linked to {key}.")
         return
 
-    table = Table(box=box.SIMPLE, show_header=True, header_style="bold bright_black", padding=(0, 1))
-    table.add_column("STATUS", width=10, no_wrap=True)
-    table.add_column("REPO",   width=20, no_wrap=True)
-    table.add_column("TITLE",  ratio=2)
-    table.add_column("URL",    ratio=3)
-
-    for pr in sorted(prs, key=lambda p: (p.get("status") != "OPEN", p.get("lastUpdate", ""))):
-        status = pr.get("status", "")
-        style  = PR_STATUS_STYLES.get(status, "white")
-        url    = pr.get("url", "")
-        repo   = pr.get("repositoryName", "")
-        title  = pr.get("name", "")
-
-        table.add_row(
-            Text(status, style=style),
-            repo,
-            title,
-            Text(url, style=f"link {url} bright_cyan"),
-        )
-
-    Console().print(table)
+    sorted_prs = sorted(prs, key=lambda p: (p.get("status") != "OPEN", p.get("lastUpdate", "")))
+    PrPickerApp(sorted_prs, open_on_enter=True).run()
 
 
 @main.group("config")
