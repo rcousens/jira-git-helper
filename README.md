@@ -49,46 +49,13 @@ jg config set token  <your-jira-api-token>
 
 Generate a token at: https://id.atlassian.com/manage-profile/security/api-tokens
 
-**2. Set up the shell hook** (so each terminal tracks its own ticket independently)
+**2. Set up the shell hook**
 
-Fish — add to `~/.config/fish/config.fish`:
-```fish
-eval (jg hook)
-```
-
-Bash — add to `~/.bashrc`:
-```sh
-eval "$(jg hook --shell bash)"
-```
-
-Zsh — add to `~/.zshrc`:
-```sh
-eval "$(jg hook --shell zsh)"
-```
-
-The hook seeds `JG_TICKET` from the last-used ticket when a new shell opens, then
-keeps it isolated — setting a ticket in one terminal does not affect others.
+The hook lets each terminal track its own ticket independently. See [Shell hook](#shell-hook) for full details and shell-specific instructions.
 
 **3. (Optional) Show the active ticket in your prompt**
 
-Fish/Tide:
-```sh
-jg setup
-```
-Then follow the printed instructions to add `jg` to your Tide prompt items.
-
-Bash — add to `~/.bashrc` (after the `eval` line):
-```sh
-PS1='$(__jg_ps1)\$ '
-```
-
-Zsh — add to `~/.zshrc` (after the `eval` line):
-```sh
-PROMPT='$(__jg_ps1)%% '
-```
-
-`__jg_ps1` prints the active ticket followed by a space, or nothing if no ticket is set.
-Splice it anywhere in your existing `PS1`/`PROMPT` string.
+See [Prompt integration](#prompt-integration) for fish/Tide, bash, and zsh instructions.
 
 **4. (Optional) Scope tickets to your projects**
 
@@ -289,9 +256,9 @@ jg set --max 500
 | Key | Action |
 |---|---|
 | `↑` / `↓` | Move between tickets |
-| Type anything | Filter the list by key, summary, assignee, or status |
-| `Enter` | Select the highlighted ticket |
-| `Escape` | Cancel |
+| `/` | Open filter bar — type to narrow by key, summary, assignee, or status |
+| `Enter` | Select the highlighted ticket (or confirm filter and return to list) |
+| `Escape` | Close filter / cancel |
 
 ---
 
@@ -307,8 +274,8 @@ jg clear
 
 ### `jg info [TICKET]`
 
-Show a detailed summary of a ticket: status, priority, assignee, reporter, labels,
-description, and a direct URL.
+Show a rich summary panel for a ticket, including: summary, status, priority,
+assignee, reporter, labels, URL, and a description excerpt (truncated at 800 chars).
 
 ```sh
 jg info            # uses the active ticket
@@ -361,6 +328,15 @@ jg branch --all    # requires `projects` to be configured
 > **Note:** `--all` requires `projects` to be configured.
 > Branch names are expected to follow the `PROJECT-1234-description` convention.
 
+**Interactive picker controls:**
+
+| Key | Action |
+|---|---|
+| `↑` / `↓` | Move between branches |
+| `/` | Open filter bar — type to narrow by branch name |
+| `Enter` | Switch to the highlighted branch (or confirm filter and return to list) |
+| `Escape` | Close filter / cancel |
+
 ---
 
 ### `jg add`
@@ -371,7 +347,7 @@ An interactive TUI for staging files and committing — all in one step.
 jg add
 ```
 
-The screen is split into three sections (staged, modified, untracked). Use `Space`
+The screen is split into up to three sections (staged, modified, untracked). Use `Space`
 to toggle files between staged/unstaged, then `Enter` to open the commit message
 prompt. The commit message is automatically prefixed with the active ticket key.
 
@@ -381,9 +357,9 @@ prompt. The commit message is automatically prefixed with the active ticket key.
 |---|---|
 | `↑` / `↓` | Move between files |
 | `Space` | Stage or unstage the highlighted file |
-| Type anything | Filter files within the focused section |
-| `Enter` | Open commit message prompt |
-| `Escape` | Cancel / close filter |
+| `/` | Open filter bar for the focused section |
+| `Enter` | Open commit message prompt (or confirm filter and return to list) |
+| `Escape` | Close filter / cancel |
 
 > **Note:** If no ticket is set, `jg add` will prompt you to pick one interactively before proceeding.
 
@@ -405,13 +381,14 @@ jg commit "fix login redirect" --no-verify
 jg commit "fix login redirect" --amend
 ```
 
-> **Note:** Like `jg add`, this refuses to run on `main` or `master`.
+> **Note:** Refuses to run on `main` or `master`. Use `jg branch <name>` to create a feature branch first.
 
 ---
 
 ### `jg push`
 
-Push the current branch to origin and open the linked PR in your browser.
+Push the current branch to origin (`git push -u origin HEAD`) and open the linked
+PR in your browser.
 
 ```sh
 jg push
@@ -432,7 +409,8 @@ jg diff            # uses the active ticket
 jg diff SWY-5678   # diff PRs for any ticket
 ```
 
-If multiple PRs are found, an interactive picker lets you choose one.
+If multiple PRs are found, an interactive picker lets you choose one (supports `/`
+to filter by status, repo, branch, or title).
 
 | Flag | Description |
 |---|---|
@@ -444,15 +422,25 @@ If multiple PRs are found, an interactive picker lets you choose one.
 
 ### `jg prs [TICKET]`
 
-List all GitHub PRs linked to a ticket.
+Browse all GitHub PRs linked to a ticket in an interactive TUI.
 
 ```sh
 jg prs             # uses the active ticket
-jg prs SWY-5678    # list PRs for any ticket
+jg prs SWY-5678    # browse PRs for any ticket
 ```
 
-PRs are sorted with open ones first, then by last-updated date. Status is
-colour-coded: green (open), yellow (draft), blue (merged), red (declined).
+Columns shown: Status, Author, Repo, Source branch, Title. PRs are sorted with open
+ones first, then by last-updated date. Status is colour-coded: green (open), yellow
+(draft), blue (merged), red (declined).
+
+**Controls:**
+
+| Key | Action |
+|---|---|
+| `↑` / `↓` | Move between PRs |
+| `/` | Open filter bar — searches status, author, repo, branch, and title |
+| `Enter` | Open the highlighted PR in your browser |
+| `Escape` | Close filter / quit |
 
 ---
 
@@ -527,6 +515,18 @@ jg setup
 ```
 
 > Fish/Tide only. For bash/zsh prompt integration, see [Prompt integration](#prompt-integration).
+
+---
+
+### `jg version`
+
+Print the installed version.
+
+```sh
+jg version
+# or
+jg --version
+```
 
 ---
 
