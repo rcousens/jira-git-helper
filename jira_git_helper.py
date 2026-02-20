@@ -816,7 +816,7 @@ class FilePickerApp(App):
     BINDINGS = [
         Binding("escape", "quit", "Cancel"),
         Binding("space", "toggle_select", "Toggle", show=True),
-        Binding("enter", "confirm", "Commit", show=True),
+        Binding("enter", "confirm", "Stage / Commit", show=True),
         Binding("slash", "activate_filter", "Filter", show=True),
     ]
 
@@ -827,77 +827,161 @@ class FilePickerApp(App):
         untracked: list[tuple[str, str]],
     ) -> None:
         super().__init__()
-        self.staged = staged
-        self.modified = modified
-        self.untracked = untracked
-        self.to_unstage: set[str] = set()
+        self.orig_staged = list(staged)
+        self.orig_modified = list(modified)
+        self.orig_untracked = list(untracked)
+
+        # Build lookup: path -> (status, origin)
+        self.file_info: dict[str, tuple[str, str]] = {}
+        for status, path in staged:
+            self.file_info[path] = (status, "staged")
+        for status, path in modified:
+            self.file_info[path] = (status, "modified")
+        for status, path in untracked:
+            self.file_info[path] = (status, "untracked")
+
+        # Ordered list of paths currently in the staged section
+        self._staged_paths: list[str] = [p for _, p in staged]
+
+        # Output
         self.to_stage: set[str] = set()
+        self.to_unstage: set[str] = set()
         self.aborted: bool = False
         self.commit_message: str | None = None
         self._section_filters: dict[str, str] = {}
 
+    # --- data helpers ---
+
+    def _files_for_section(self, section_id: str) -> list[tuple[str, str]]:
+        """Return (status, path) pairs for a section given current staged state."""
+        staged_set = set(self._staged_paths)
+        if section_id == "staged":
+            return sorted(
+                [(self.file_info[p][0], p) for p in self._staged_paths],
+                key=lambda x: x[1],
+            )
+        if section_id == "modified":
+            # Unstaged-modified files + any originally-staged non-added files moved out
+            files = [(s, p) for s, p in self.orig_modified if p not in staged_set]
+            files += [
+                (s, p) for s, p in self.orig_staged
+                if p not in staged_set and s != "A"
+            ]
+            return sorted(files, key=lambda x: x[1])
+        if section_id == "untracked":
+            # Unstaged-untracked files + any originally-staged added files moved out
+            files = [(s, p) for s, p in self.orig_untracked if p not in staged_set]
+            files += [
+                (s, p) for s, p in self.orig_staged
+                if p not in staged_set and s == "A"
+            ]
+            return sorted(files, key=lambda x: x[1])
+        return []
+
+    def _compute_ops(self) -> None:
+        orig_staged_paths = {p for _, p in self.orig_staged}
+        current_staged = set(self._staged_paths)
+        self.to_stage = current_staged - orig_staged_paths
+        self.to_unstage = orig_staged_paths - current_staged
+
+    # --- compose / mount ---
+
     def compose(self) -> ComposeResult:
-        if self.staged:
-            with Vertical(classes="section"):
-                yield Label("  Staged  (space to unstage)", classes="section-label")
-                yield DataTable(id="staged", cursor_type="row", zebra_stripes=True)
-                yield Input(id="filter-staged", placeholder="Filter…", classes="section-filter")
-        if self.modified:
-            with Vertical(classes="section"):
-                yield Label("  Modified  (space to stage)", classes="section-label")
-                yield DataTable(id="modified", cursor_type="row", zebra_stripes=True)
-                yield Input(id="filter-modified", placeholder="Filter…", classes="section-filter")
-        if self.untracked:
-            with Vertical(classes="section"):
-                yield Label("  Untracked  (space to stage)", classes="section-label")
-                yield DataTable(id="untracked", cursor_type="row", zebra_stripes=True)
-                yield Input(id="filter-untracked", placeholder="Filter…", classes="section-filter")
+        with Vertical(classes="section"):
+            yield Label("  Staged  (space to unstage)", classes="section-label")
+            yield DataTable(id="staged", cursor_type="row", zebra_stripes=True)
+            yield Input(id="filter-staged", placeholder="Filter…", classes="section-filter")
+        with Vertical(classes="section"):
+            yield Label("  Modified  (space to stage)", classes="section-label")
+            yield DataTable(id="modified", cursor_type="row", zebra_stripes=True)
+            yield Input(id="filter-modified", placeholder="Filter…", classes="section-filter")
+        with Vertical(classes="section"):
+            yield Label("  Untracked  (space to stage)", classes="section-label")
+            yield DataTable(id="untracked", cursor_type="row", zebra_stripes=True)
+            yield Input(id="filter-untracked", placeholder="Filter…", classes="section-filter")
         yield Footer()
 
     def on_mount(self) -> None:
-        self._populate("staged",    self.staged,    self.to_unstage)
-        self._populate("modified",  self.modified,  self.to_stage)
-        self._populate("untracked", self.untracked, self.to_stage)
-        # Focus the first visible table
-        tables = self.query(DataTable)
-        if tables:
-            tables.first().focus()
+        self._init_table("staged")
+        self._init_table("modified")
+        self._init_table("untracked")
+        # Focus the first non-empty non-staged table; fall back to staged.
+        for tid in ("modified", "untracked", "staged"):
+            t = self.query_one(f"#{tid}", DataTable)
+            if t.row_count > 0:
+                t.focus()
+                return
 
-    def _checkbox(self, path: str, selected: set[str]):
-        from rich.text import Text as RichText
-        if path in selected:
-            return RichText.from_markup("[bold green]☑[/bold green]")
-        return RichText.from_markup("[dim]☐[/dim]")
-
-    def _path_cell(self, path: str, selected: set[str], default_style: str = ""):
-        from rich.text import Text as RichText
-        if path in selected:
-            return RichText.from_markup(f"[bold green]{path}[/bold green]")
-        if default_style:
-            return RichText.from_markup(f"[{default_style}]{path}[/{default_style}]")
-        return RichText(path)
-
-    def _populate(self, table_id: str, files: list[tuple[str, str]], selected: set[str]) -> None:
-        from rich.text import Text as RichText
+    def _init_table(self, table_id: str) -> None:
         try:
             table = self.query_one(f"#{table_id}", DataTable)
         except Exception:
             return
-        table.add_column("", width=3)
         table.add_column("STATUS", width=12)
         table.add_column("FILE")
+        for status, path in self._files_for_section(table_id):
+            self._add_row(table, status, path, table_id)
+
+    def _add_row(self, table: DataTable, status: str, path: str, section_id: str) -> None:
+        from rich.text import Text as RichText
+
+        # Classify by file type.
+        # "A" = added to index (was previously untracked), treated the same as "?"
+        is_untracked_type = status in ("A", "?")
+
+        # Label
+        label = "untracked" if is_untracked_type else FILE_STATUS_LABELS.get(status, status)
+
+        # Status label: green in staged section, type colour everywhere else
+        if section_id == "staged":
+            status_style = "bold green"
+        elif is_untracked_type:
+            status_style = "bold red"
+        else:
+            status_style = "bold dark_orange"
+
+        # Filename colour is always based on file type and persists across sections
+        if is_untracked_type:
+            path_style = "red"
+        elif status in ("M", "D", "R", "C"):
+            path_style = "dark_orange"
+        else:
+            path_style = ""
+
+        path_cell = (
+            RichText.from_markup(f"[{path_style}]{path}[/{path_style}]")
+            if path_style else RichText(path)
+        )
+        table.add_row(RichText(label, style=status_style), path_cell, key=path)
+
+    # --- refresh ---
+
+    def _refresh_table(self, table_id: str) -> None:
+        try:
+            table = self.query_one(f"#{table_id}", DataTable)
+        except Exception:
+            return
+        all_files = self._files_for_section(table_id)
+        filt = self._section_filters.get(table_id, "").lower()
+        files = [(s, p) for s, p in all_files if filt in p.lower()] if filt else all_files
+        cursor = table.cursor_row
+        table.clear()
         for status, path in files:
-            label = FILE_STATUS_LABELS.get(status, status)
-            style = FILE_STATUS_STYLES.get(status, "white")
-            path_style = FILE_PATH_STYLES.get(status, "")
-            table.add_row(self._checkbox(path, selected), RichText(label, style=style), self._path_cell(path, selected, path_style), key=path)
+            self._add_row(table, status, path, table_id)
+        table.move_cursor(row=min(cursor, max(0, table.row_count - 1)))
+
+    def _refresh_all(self) -> None:
+        self._refresh_table("staged")
+        self._refresh_table("modified")
+        self._refresh_table("untracked")
+
+    # --- helpers ---
 
     def _focused_table(self) -> DataTable | None:
         w = self.focused
         return w if isinstance(w, DataTable) else None
 
-    def _selected_set(self, table: DataTable) -> set[str]:
-        return self.to_unstage if table.id == "staged" else self.to_stage
+    # --- event handlers ---
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id and event.input.id.startswith("filter-"):
@@ -948,6 +1032,8 @@ class FilePickerApp(App):
             self.action_confirm()
             event.prevent_default()
 
+    # --- actions ---
+
     def action_activate_filter(self) -> None:
         table = self._focused_table()
         if table is None:
@@ -961,52 +1047,37 @@ class FilePickerApp(App):
         except Exception:
             pass
 
-    def _rebuild_table(self, table: DataTable, files: list[tuple[str, str]], selected: set[str]) -> None:
-        from rich.text import Text as RichText
-        cursor = table.cursor_row
-        table.clear()
-        for status, path in files:
-            label = FILE_STATUS_LABELS.get(status, status)
-            style = FILE_STATUS_STYLES.get(status, "white")
-            path_style = FILE_PATH_STYLES.get(status, "")
-            table.add_row(self._checkbox(path, selected), RichText(label, style=style), self._path_cell(path, selected, path_style), key=path)
-        table.move_cursor(row=min(cursor, max(0, table.row_count - 1)))
-
-    def _refresh_table(self, table_id: str) -> None:
-        """Rebuild a section's table applying the current filter."""
-        try:
-            table = self.query_one(f"#{table_id}", DataTable)
-        except Exception:
-            return
-        all_files = {"staged": self.staged, "modified": self.modified, "untracked": self.untracked}.get(table_id, [])
-        selected = self.to_unstage if table_id == "staged" else self.to_stage
-        filt = self._section_filters.get(table_id, "").lower()
-        files = [(s, p) for s, p in all_files if filt in p.lower()] if filt else all_files
-        self._rebuild_table(table, files, selected)
-
     def action_toggle_select(self) -> None:
         table = self._focused_table()
         if table is None or table.row_count == 0:
             return
         cell_key = table.coordinate_to_cell_key(Coordinate(table.cursor_row, 0))
         path = cell_key.row_key.value
-        selected = self._selected_set(table)
-        if path in selected:
-            selected.discard(path)
-        else:
-            selected.add(path)
         cursor = table.cursor_row
-        self._refresh_table(table.id)
-        table.move_cursor(row=min(cursor + 1, max(0, table.row_count - 1)))
+
+        if table.id == "staged":
+            self._staged_paths.remove(path)
+        else:
+            if path not in self._staged_paths:
+                self._staged_paths.append(path)
+
+        self._refresh_all()
+        # Keep cursor near same position in the table the user was in
+        table.move_cursor(row=min(cursor, max(0, table.row_count - 1)))
 
     def action_confirm(self) -> None:
+        if not self._staged_paths:
+            # Nothing staged — apply any pending unstage ops and exit without commit modal
+            self._compute_ops()
+            self.exit()
+            return
         ticket = get_ticket()
         self.push_screen(CommitModal(ticket), self._on_commit_modal)
 
     def _on_commit_modal(self, message: str | None) -> None:
+        self._compute_ops()
         if message is not None:
             self.commit_message = message
-        # Always exit — staging changes are kept, commit only if message given
         self.exit()
 
     def action_quit(self) -> None:
