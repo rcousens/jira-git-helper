@@ -4,7 +4,14 @@ import shutil
 import subprocess
 import sys
 import webbrowser
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
+
+try:
+    __version__ = _pkg_version("jira-git-helper")
+except PackageNotFoundError:
+    __version__ = "unknown"
 
 import requests
 
@@ -419,6 +426,7 @@ class PrPickerApp(App):
 
 
 @click.group(invoke_without_command=True)
+@click.version_option(__version__, prog_name="jg")
 @click.pass_context
 def main(ctx: click.Context) -> None:
     """Manage JIRA ticket context for git workflows."""
@@ -479,6 +487,12 @@ def cmd_clear() -> None:
     """Clear the current JIRA ticket."""
     clear_ticket()
     click.echo("Ticket cleared")
+
+
+@main.command("version")
+def cmd_version() -> None:
+    """Show the jg version."""
+    click.echo(f"jg {__version__}")
 
 
 def _get_file_statuses() -> tuple[list[tuple[str, str]], list[tuple[str, str]], list[tuple[str, str]]]:
@@ -953,7 +967,6 @@ def cmd_branch(name: str | None, show_all: bool) -> None:
 @main.command("add")
 def cmd_add() -> None:
     """Interactively stage and unstage files."""
-    _check_not_main_branch()
     ticket = ensure_ticket()
     staged, modified, untracked = _get_file_statuses()
 
@@ -1359,9 +1372,20 @@ def cmd_hook(shell: str) -> None:
     Fish:  eval (jg hook)
     Bash:  eval "$(jg hook --shell bash)"
     Zsh:   eval "$(jg hook --shell zsh)"
+
+    The bash/zsh hook defines __jg_ps1 which can be spliced into PS1/PROMPT.
+    For fish/tide prompt integration run: jg setup
     """
     if shell == "fish":
         click.echo(f"""\
+# Seed JG_TICKET from the persisted default when this shell starts
+if not set -q JG_TICKET
+    set -l _jg_default (cat {STATE_FILE} 2>/dev/null)
+    if test -n "$_jg_default"
+        set -gx JG_TICKET $_jg_default
+    end
+end
+
 function jg
     command jg $argv
     set -l _jg_exit $status
@@ -1371,6 +1395,14 @@ function jg
             if test -n "$_jg_ticket"
                 set -gx JG_TICKET $_jg_ticket
             end
+        case branch
+            # Only update JG_TICKET when --all is passed; plain 'jg branch' does not change STATE_FILE
+            if contains -- --all $argv
+                set -l _jg_ticket (cat {STATE_FILE} 2>/dev/null)
+                if test -n "$_jg_ticket"
+                    set -gx JG_TICKET $_jg_ticket
+                end
+            end
         case clear
             set -e JG_TICKET
     end
@@ -1379,6 +1411,22 @@ end""")
     else:
         # bash and zsh share the same syntax
         click.echo(f"""\
+# Seed JG_TICKET from the persisted default when this shell starts
+if [ -z "${{JG_TICKET:-}}" ]; then
+    _jg_default=$(cat {STATE_FILE} 2>/dev/null)
+    if [ -n "$_jg_default" ]; then
+        export JG_TICKET="$_jg_default"
+    fi
+    unset _jg_default
+fi
+
+# Splice into your prompt:
+#   bash: PS1='$(__jg_ps1)\\$ '
+#   zsh:  PROMPT='$(__jg_ps1)%% '
+__jg_ps1() {{
+    [ -n "${{JG_TICKET:-}}" ] && printf '%s ' "$JG_TICKET"
+}}
+
 jg() {{
     command jg "$@"
     local _jg_exit=$?
@@ -1388,6 +1436,20 @@ jg() {{
             _jg_ticket=$(cat {STATE_FILE} 2>/dev/null)
             if [ -n "$_jg_ticket" ]; then
                 export JG_TICKET="$_jg_ticket"
+            fi
+            ;;
+        branch)
+            # Only update JG_TICKET when --all is passed; plain 'jg branch' does not change STATE_FILE
+            local _jg_has_all=0
+            for _jg_arg in "$@"; do
+                [ "$_jg_arg" = "--all" ] && _jg_has_all=1 && break
+            done
+            if [ "$_jg_has_all" = "1" ]; then
+                local _jg_ticket
+                _jg_ticket=$(cat {STATE_FILE} 2>/dev/null)
+                if [ -n "$_jg_ticket" ]; then
+                    export JG_TICKET="$_jg_ticket"
+                fi
             fi
             ;;
         clear)
@@ -1402,11 +1464,10 @@ jg() {{
 def cmd_setup() -> None:
     """Configure fish/tide prompt integration."""
     tide_fn_file = Path.home() / ".config" / "fish" / "functions" / "_tide_item_jg.fish"
-    fish_fn = f"""\
+    fish_fn = """\
 function _tide_item_jg
-    set -l ticket (cat {STATE_FILE} 2>/dev/null)
-    if test -n "$ticket"
-        _tide_print_item jg $tide_jg_icon' ' $ticket
+    if set -q JG_TICKET
+        _tide_print_item jg $tide_jg_icon' ' $JG_TICKET
     end
 end
 """

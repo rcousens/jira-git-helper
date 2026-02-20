@@ -49,7 +49,7 @@ jg config set token  <your-jira-api-token>
 
 Generate a token at: https://id.atlassian.com/manage-profile/security/api-tokens
 
-**2. Set up the shell hook** (so `jg set`/`jg clear` update your current terminal)
+**2. Set up the shell hook** (so each terminal tracks its own ticket independently)
 
 Fish — add to `~/.config/fish/config.fish`:
 ```fish
@@ -66,7 +66,31 @@ Zsh — add to `~/.zshrc`:
 eval "$(jg hook --shell zsh)"
 ```
 
-**3. (Optional) Scope tickets to your projects**
+The hook seeds `JG_TICKET` from the last-used ticket when a new shell opens, then
+keeps it isolated — setting a ticket in one terminal does not affect others.
+
+**3. (Optional) Show the active ticket in your prompt**
+
+Fish/Tide:
+```sh
+jg setup
+```
+Then follow the printed instructions to add `jg` to your Tide prompt items.
+
+Bash — add to `~/.bashrc` (after the `eval` line):
+```sh
+PS1='$(__jg_ps1)\$ '
+```
+
+Zsh — add to `~/.zshrc` (after the `eval` line):
+```sh
+PROMPT='$(__jg_ps1)%% '
+```
+
+`__jg_ps1` prints the active ticket followed by a space, or nothing if no ticket is set.
+Splice it anywhere in your existing `PS1`/`PROMPT` string.
+
+**4. (Optional) Scope tickets to your projects**
 
 ```sh
 jg config set projects SWY
@@ -74,7 +98,7 @@ jg config set projects SWY
 jg config set projects SWY,DOPS
 ```
 
-**4. Pick a ticket and start working**
+**5. Pick a ticket and start working**
 
 ```sh
 jg set        # opens an interactive picker
@@ -149,9 +173,16 @@ This shows all standard keys plus any `jql.<PROJECT>` keys you've set.
 
 ## Shell hook
 
-The hook wraps the `jg` command in your shell so that `jg set` and `jg clear`
-update the `JG_TICKET` environment variable in your **current terminal session**.
-Without the hook, ticket state is shared across all terminals via a file.
+The hook does three things:
+
+1. **Seeds `JG_TICKET`** from the last-used ticket when a new shell opens (so you
+   don't start from scratch every time).
+2. **Keeps terminals isolated** — `jg set` in one terminal updates only that
+   terminal's `JG_TICKET`. Other open terminals are unaffected.
+3. **Updates `JG_TICKET`** after `jg set` or `jg branch --all`, and clears it after
+   `jg clear`.
+
+Without the hook, all terminals share the same ticket via the state file.
 
 Fish — add to `~/.config/fish/config.fish`:
 ```fish
@@ -170,15 +201,46 @@ eval "$(jg hook --shell zsh)"
 
 ---
 
-## Tide prompt integration (fish)
+## Prompt integration
 
-Display the active ticket in your [Tide](https://github.com/IlanCosman/tide) prompt:
+### Fish / Tide
+
+Display the active ticket in your [Tide](https://github.com/IlanCosman/tide) prompt.
+Run once to install the prompt item:
 
 ```sh
 jg setup
 ```
 
 Then follow the printed instructions to add `jg` to your Tide prompt items.
+
+> The `jg setup` command writes `~/.config/fish/functions/_tide_item_jg.fish`, which
+> reads the shell-local `$JG_TICKET` variable — so each terminal shows its own ticket.
+
+### Bash
+
+The hook defines a `__jg_ps1` helper. Splice it into your `PS1` in `~/.bashrc`
+(after the `eval` line):
+
+```sh
+PS1='$(__jg_ps1)\$ '
+```
+
+Or anywhere inside an existing prompt string, e.g.:
+
+```sh
+PS1='\u@\h $(__jg_ps1)\$ '
+```
+
+### Zsh
+
+Same helper, different variable. Add to `~/.zshrc` (after the `eval` line):
+
+```sh
+PROMPT='$(__jg_ps1)%% '
+```
+
+`__jg_ps1` prints the active ticket followed by a space, or nothing if no ticket is set.
 
 ---
 
@@ -323,7 +385,7 @@ prompt. The commit message is automatically prefixed with the active ticket key.
 | `Enter` | Open commit message prompt |
 | `Escape` | Cancel / close filter |
 
-> **Note:** `jg add` refuses to run on `main` or `master` to prevent accidental commits.
+> **Note:** If no ticket is set, `jg add` will prompt you to pick one interactively before proceeding.
 
 ---
 
@@ -449,17 +511,22 @@ jg hook --shell zsh
 |---|---|
 | `--shell fish\|bash\|zsh` | Shell to emit the hook for (default: `fish`) |
 
+The bash/zsh hook also defines `__jg_ps1` for prompt integration (see
+[Prompt integration](#prompt-integration)).
+
 ---
 
 ### `jg setup`
 
-Configure Tide prompt integration. Creates
-`~/.config/fish/functions/_tide_item_jg.fish` and prints the follow-up commands
-needed to activate it.
+Configure fish/Tide prompt integration. Creates
+`~/.config/fish/functions/_tide_item_jg.fish` and prints the follow-up `set -U`
+commands needed to activate and style the prompt item.
 
 ```sh
 jg setup
 ```
+
+> Fish/Tide only. For bash/zsh prompt integration, see [Prompt integration](#prompt-integration).
 
 ---
 
