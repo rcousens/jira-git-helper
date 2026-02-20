@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -47,29 +48,26 @@ def clear_ticket() -> None:
 
 
 def ensure_ticket() -> str:
-    """Return the current ticket. If none is set, show the interactive picker."""
+    """Return the current ticket. If none is set, show the interactive picker.
+
+    Tickets are fetched from all configured projects and shown in a single merged list.
+    """
     ticket = get_ticket()
     if ticket:
         return ticket
 
-    # Lazy import — JiraListApp is defined later in the file
-    from jira import JIRAError  # already imported at top, but kept for clarity
-
     jira = get_jira_client()
     click.echo("No ticket set — fetching tickets…", err=True)
+
     try:
-        issues = jira.search_issues(
-            get_default_jql(),
-            maxResults=200,
-            fields=["summary", "status", "assignee", "priority"],
-        )
+        issues = fetch_issues_for_projects(jira, get_projects(), max_results=200)
     except JIRAError as e:
         raise click.ClickException(f"JIRA API error: {e.text}") from e
 
     if not issues:
         raise click.ClickException("No issues found.")
 
-    app = JiraListApp(list(issues))
+    app = JiraListApp(issues)
     app.run()
 
     if not app.selected_ticket:
@@ -113,6 +111,25 @@ def set_config(key: str, value: str) -> None:
     _write_config(config)
 
 
+def get_projects() -> list[str]:
+    """Return the list of configured project keys (from the comma-separated 'projects' config)."""
+    raw = get_config("projects") or ""
+    return [p.strip().upper() for p in raw.split(",") if p.strip()]
+
+
+def get_jql_for_project(project: str) -> str:
+    """Return the JQL for a specific project key.
+
+    Resolution order:
+      1. jql.<PROJECT> config key
+      2. Default: project = PROJECT AND assignee = currentUser() ORDER BY updated DESC
+    """
+    return (
+        get_config(f"jql.{project}")
+        or f"project = {project} AND assignee = currentUser() ORDER BY updated DESC"
+    )
+
+
 # --- JIRA helpers ---
 
 
@@ -126,7 +143,19 @@ def get_jira_server() -> str:
 
 
 def get_default_jql() -> str:
-    return get_config("jql") or _FALLBACK_JQL
+    """Return the JQL to use when no project has been explicitly selected.
+
+    Resolution order:
+      1. Per-project JQL via get_jql_for_project() when exactly one project is configured
+      2. _FALLBACK_JQL (assigned to currentUser, no project filter)
+
+    When multiple projects are configured, callers should prompt the user to pick
+    a project first and then call get_jql_for_project() directly.
+    """
+    projects = get_projects()
+    if len(projects) == 1:
+        return get_jql_for_project(projects[0])
+    return _FALLBACK_JQL
 
 
 def get_jira_client() -> JIRA:
@@ -142,6 +171,53 @@ def get_jira_client() -> JIRA:
             "JIRA email not configured. Run: jg config set email you@example.com"
         )
     return JIRA(server=server, basic_auth=(email, token))
+
+
+def fetch_issues_for_projects(
+    jira: JIRA,
+    projects: list[str],
+    max_results: int,
+) -> list:
+    """Fetch issues across all configured projects, returning a merged list.
+
+    Strategy:
+    - 0 projects: use _FALLBACK_JQL (single query)
+    - 1 project: use get_jql_for_project() (single query)
+    - Multiple projects, none with custom jql.<PROJECT>: build a combined OR query
+      so JIRA handles sorting in a single round-trip
+    - Multiple projects, any with custom jql.<PROJECT>: run one query per project
+      and merge/deduplicate in Python
+    """
+    fields = ["summary", "status", "assignee", "priority"]
+
+    if not projects:
+        return list(jira.search_issues(_FALLBACK_JQL, maxResults=max_results, fields=fields))
+
+    if len(projects) == 1:
+        return list(jira.search_issues(
+            get_jql_for_project(projects[0]), maxResults=max_results, fields=fields
+        ))
+
+    # Multiple projects
+    has_custom_jql = any(get_config(f"jql.{p}") for p in projects)
+
+    if not has_custom_jql:
+        project_clause = " OR ".join(f"project = {p}" for p in projects)
+        combined_jql = f"({project_clause}) AND assignee = currentUser() ORDER BY updated DESC"
+        return list(jira.search_issues(combined_jql, maxResults=max_results, fields=fields))
+
+    # Per-project queries — merge and deduplicate, preserving insertion order
+    seen: set[str] = set()
+    merged = []
+    per_project_max = max(50, max_results // len(projects))
+    for project in projects:
+        for issue in jira.search_issues(
+            get_jql_for_project(project), maxResults=per_project_max, fields=fields
+        ):
+            if issue.key not in seen:
+                seen.add(issue.key)
+                merged.append(issue)
+    return merged
 
 
 # --- TUI ---
@@ -357,10 +433,15 @@ def main(ctx: click.Context) -> None:
 
 @main.command("set")
 @click.argument("ticket", required=False)
-@click.option("--jql", default=None, help="JQL filter (defaults to config jql or assigned tickets)")
+@click.option("--jql", default=None, help="Raw JQL override — bypasses all project and per-project jql config")
 @click.option("--max", "max_results", default=200, show_default=True, help="Max results to fetch")
 def cmd_set(ticket: str | None, jql: str | None, max_results: int) -> None:
-    """Set the current JIRA ticket, or browse interactively if no ticket given."""
+    """Set the current JIRA ticket, or browse interactively if no ticket given.
+
+    Shows tickets from all configured projects in a single merged list. Each project
+    uses its jql.<PROJECT> config if set, or the default project JQL. Pass --jql to
+    bypass all project config and use a raw JQL query instead.
+    """
     if ticket:
         save_ticket(ticket)
         click.echo(f"Ticket set to {ticket}")
@@ -369,11 +450,13 @@ def cmd_set(ticket: str | None, jql: str | None, max_results: int) -> None:
     jira = get_jira_client()
     click.echo("Fetching tickets…", err=True)
     try:
-        issues = jira.search_issues(
-            jql or get_default_jql(),
-            maxResults=max_results,
-            fields=["summary", "status", "assignee", "priority"],
-        )
+        if jql:
+            issues = list(jira.search_issues(
+                jql, maxResults=max_results,
+                fields=["summary", "status", "assignee", "priority"],
+            ))
+        else:
+            issues = fetch_issues_for_projects(jira, get_projects(), max_results)
     except JIRAError as e:
         raise click.ClickException(f"JIRA API error: {e.text}") from e
 
@@ -381,7 +464,7 @@ def cmd_set(ticket: str | None, jql: str | None, max_results: int) -> None:
         click.echo("No issues found.")
         return
 
-    app = JiraListApp(list(issues))
+    app = JiraListApp(issues)
     app.run()
 
     if app.selected_ticket:
@@ -417,6 +500,28 @@ def _get_file_statuses() -> tuple[list[tuple[str, str]], list[tuple[str, str]], 
             if y not in (" ", "?"):
                 modified.append((y, path))
     return staged, modified, untracked
+
+
+def _get_current_branch() -> str | None:
+    """Return the current git branch name, or None if not on a branch."""
+    result = subprocess.run(
+        ["git", "symbolic-ref", "--short", "HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def _check_not_main_branch() -> None:
+    """Abort with an error if the current branch is main or master."""
+    branch = _get_current_branch()
+    if branch in ("main", "master"):
+        raise click.ClickException(
+            f"You are on '{branch}', which is branch-protected. "
+            "Create a feature branch first (e.g. jg branch <name>)."
+        )
 
 
 def _get_local_branches() -> list[tuple[str, bool]]:
@@ -781,8 +886,46 @@ class FilePickerApp(App):
 
 @main.command("branch")
 @click.argument("name", required=False)
-def cmd_branch(name: str | None) -> None:
+@click.option("--all", "show_all", is_flag=True, help="Browse all branches for the configured project and set the active ticket")
+def cmd_branch(name: str | None, show_all: bool) -> None:
     """Switch to a ticket branch interactively, or create one with the given name."""
+    if show_all and not name:
+        projects = get_projects()
+        if not projects:
+            raise click.ClickException(
+                "No projects configured. Run: jg config set projects MYPROJECT"
+            )
+
+        all_branches = _get_local_branches()
+        matching = [
+            (b, cur) for b, cur in all_branches
+            if any(b.upper().startswith(p.upper() + "-") for p in projects)
+        ]
+
+        if not matching:
+            project_list = ", ".join(projects)
+            click.echo(f"No local branches found for projects: {project_list}.")
+            return
+
+        app = BranchPickerApp(matching)
+        app.run()
+
+        if not app.selected_branch:
+            click.echo("No branch selected.", err=True)
+            return
+
+        # Extract ticket key from the branch name using whichever project prefix matches
+        for project in projects:
+            m = re.match(rf"^({re.escape(project)}-\d+)", app.selected_branch, re.IGNORECASE)
+            if m:
+                ticket_key = m.group(1).upper()
+                save_ticket(ticket_key)
+                click.echo(f"Ticket set to {ticket_key}")
+                break
+
+        subprocess.run(["git", "switch", app.selected_branch], check=True)
+        return
+
     ticket = ensure_ticket()
 
     if name:
@@ -810,6 +953,7 @@ def cmd_branch(name: str | None) -> None:
 @main.command("add")
 def cmd_add() -> None:
     """Interactively stage and unstage files."""
+    _check_not_main_branch()
     ticket = ensure_ticket()
     staged, modified, untracked = _get_file_statuses()
 
@@ -895,6 +1039,7 @@ def cmd_push() -> None:
 @click.argument("git_args", nargs=-1, type=click.UNPROCESSED)
 def cmd_commit(message: str, git_args: tuple[str, ...]) -> None:
     """Commit with message prefixed by the current ticket (TICKET-123 <message>)."""
+    _check_not_main_branch()
     ticket = get_ticket()
     if not ticket:
         click.echo("No ticket set. Use 'jg set TICKET-123' first.", err=True)
@@ -1162,19 +1307,26 @@ def config_get(key: str) -> None:
 @click.argument("key")
 @click.argument("value")
 def config_set(key: str, value: str) -> None:
-    """Set a config value."""
+    """Set a config value.
+
+    Standard keys: server, email, token, projects
+
+    Use jql.<PROJECT> to set per-project JQL (overrides the default for that project):
+
+      jg config set jql.SWY "project = SWY AND sprint in openSprints() AND assignee = currentUser()"
+    """
     set_config(key, value)
     click.echo(f"{key} = {value}")
 
 
 @cmd_config.command("list")
 def config_list() -> None:
-    """List all config values."""
+    """List all config values, including any per-project jql.<PROJECT> keys."""
     known = [
-        ("server", "JIRA server URL, e.g. https://yourcompany.atlassian.net", False),
-        ("email",  "JIRA account email",                                        False),
-        ("token",  "JIRA API token",                                            True),
-        ("jql",    "Default JQL for the ticket picker (optional)",              False),
+        ("server",  "JIRA server URL, e.g. https://yourcompany.atlassian.net",              False),
+        ("email",   "JIRA account email",                                                    False),
+        ("token",   "JIRA API token",                                                        True),
+        ("projects", "Project key(s) for the ticket picker, e.g. SWY or SWY,ABC (optional)", False),
     ]
     config = _read_config()
     for key, description, secret in known:
@@ -1184,6 +1336,12 @@ def config_list() -> None:
             click.echo(f"{key} = {display}")
         else:
             click.echo(f"{key} = (not set)  # {description}")
+
+    project_jqls = {k: v for k, v in config.items() if k.startswith("jql.")}
+    if project_jqls:
+        click.echo()
+        for key, value in sorted(project_jqls.items()):
+            click.echo(f"{key} = {value}  # per-project JQL")
 
 
 
