@@ -1,6 +1,6 @@
 [project]
 name = "jira-git-helper"
-version = "0.19.0"
+version = "0.20.0"
 description = "JIRA ticket context manager for git workflows"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -30,7 +30,7 @@ dependencies = [
 ]
 
 [project.scripts]
-jg = "jira_git_helper:main"
+jg = "jira_git_helper.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/YOUR_USERNAME/jira-git-helper"

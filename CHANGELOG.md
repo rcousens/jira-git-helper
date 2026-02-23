@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.20.0
+
+### Multi-module package refactor
+
+The single-file monolith (`jira_git_helper.py`, ~3,700 lines) has been split into a proper Python package with 14 focused modules. No functionality changes — pure structural refactor.
+
+```
+jira_git_helper/
+├── __init__.py           # package version
+├── cli.py                # all Click commands (879 lines)
+├── config.py             # config file + ticket state management (150 lines)
+├── formatters.py         # formatter execution, eof fixer (153 lines)
+├── git.py                # git subprocess wrappers (97 lines)
+├── jira_api.py           # JIRA client, field cache, issue/PR fetching (172 lines)
+└── tui/
+    ├── __init__.py
+    ├── theme.py           # shared CSS, colour constants, helpers (172 lines)
+    ├── modals.py          # TextInputModal, ConfirmModal, FmtModal (143 lines)
+    ├── ticket_picker.py   # JiraListApp + supporting modals (829 lines)
+    ├── branch.py          # BranchPromptApp, BranchPickerApp, BranchDiffModal (274 lines)
+    ├── file_picker.py     # FilePickerApp, CommitModal (418 lines)
+    ├── pr_picker.py       # PrPickerApp, DiffModal (379 lines)
+    └── prune.py           # PruneApp (168 lines)
+```
+
+**Key improvements:**
+- **CSS deduplication**: shared CSS blocks (`SCREEN_CSS`, `DATATABLE_CSS`, `FOOTER_CSS`, etc.) in `tui/theme.py` replace 5+ inline copies across TUI apps.
+- **Shared ticket info renderer**: `build_ticket_info()` in `tui/theme.py` eliminates duplicate fetch-and-render logic between `TicketInfoModal` and `BranchPromptApp`.
+- **Lazy TUI imports**: CLI commands import TUI modules inside their functions, keeping `jg --help` and non-interactive commands fast.
+- **Clean dependency graph**: core modules (`config`, `git`, `jira_api`, `formatters`) have no TUI dependencies; TUI modules import from core; `cli.py` orchestrates both.
+
+---
+
 ## v0.19.0
 
 ### Branch prompt on main/master
