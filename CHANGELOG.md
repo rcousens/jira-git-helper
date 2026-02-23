@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.14.0
+
+### New command: `jg fmt`
+
+Run formatters against all modified, staged, and untracked files in the repo.
+
+- **`jg fmt`** — for each dirty file, runs the built-in `eof` formatter and any user-configured formatters whose glob matches the filename. Results are displayed as a Rich table with status (`✓` / `✗` / `—`), file path, formatter name, exit code, and a note column for errors or skip reasons.
+- **Built-in `eof` formatter** — always runs on every text file. Ensures each file ends with exactly one newline, stripping any extra trailing newlines.
+- **Binary file detection** — before running any formatter, `git ls-files --eol` is used to identify binary files (`w/-text`). Binary files are shown in the table as `— skipped (binary)` and skipped entirely.
+- **`jg fmt add [name]`** — interactively add a user formatter (prompts for file glob and command). The command uses `{}` as a placeholder for the absolute file path, similar to `find -exec`.
+- **`jg fmt list`** — list all configured user formatters.
+- **`jg fmt delete <name>`** — remove a user formatter by name.
+
+Formatters are stored in config under the `fmt` key and shown in `jg config list`.
+
+### `jg add` — format from the staging screen
+
+- **`f` — run formatters**: press `f` in the `jg add` file picker to open a full-screen format results modal. Formatters run in the background; the same Rich table used by `jg fmt` is shown inline. Press any key to close the modal. Git status is automatically reloaded afterwards so the file lists reflect any changes made by the formatters.
+
+---
+
+## v0.13.0
+
+### `jg branch <name>` — always forks from the default branch
+
+- Creating a new branch with `jg branch <name>` now always forks from the default branch (`main`/`master`, auto-detected from `origin/HEAD`) rather than the current branch. The output confirms which branch is being forked from, e.g. `Creating branch: SWY-1234-fix (from main)`.
+
+### `jg add` — commit prompt fix
+
+- Fixed a `MountError` crash caused by two widgets sharing the `id="hint"` in the commit message prompt.
+
+---
+
 ## v0.12.0
 
 ### `jg add` — commit prompt clarification

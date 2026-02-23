@@ -1,3 +1,4 @@
+import fnmatch
 import json
 import os
 import re
@@ -159,6 +160,20 @@ def set_active_filter_name(project: str, name: str | None) -> None:
     else:
         config.pop(key, None)
     _write_config(config)
+
+
+def get_formatters() -> list[dict]:
+    """Return all configured formatters as a list of {name, glob, cmd} dicts."""
+    raw = get_config("fmt") or "[]"
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return []
+
+
+def set_formatters(formatters: list[dict]) -> None:
+    """Persist the formatter list."""
+    set_config("fmt", json.dumps(formatters, separators=(",", ":")))
 
 
 # Session-level active filter overrides (not persisted — live for the process lifetime).
@@ -1752,6 +1767,47 @@ class DiffModal(ModalScreen):
         self._scroll_to_line(self._file_starts[self._file_idx])
 
 
+class FmtModal(ModalScreen):
+    CSS = """
+    FmtModal { background: $background 80%; }
+    #fmt-outer {
+        width: 90%;
+        height: 80%;
+        border: thick $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    #fmt-title  { text-style: bold; padding-bottom: 1; }
+    #fmt-scroll { height: 1fr; }
+    #fmt-hint   { color: $text-muted; padding-top: 1; }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="fmt-outer"):
+            yield Label("Format results", id="fmt-title")
+            with ScrollableContainer(id="fmt-scroll"):
+                yield Static("Running formatters…", id="fmt-content")
+            yield Label("Press any key to close", id="fmt-hint")
+
+    def on_mount(self) -> None:
+        self.run_worker(self._run, thread=True)
+
+    def _run(self) -> None:
+        msg, table = _build_fmt_table()
+        if msg == "clean":
+            content = "Nothing to format — working tree clean."
+        else:
+            content = table
+        self.app.call_from_thread(self._update, content)
+
+    def _update(self, content) -> None:
+        self.query_one("#fmt-content", Static).update(content)
+
+    def on_key(self, event) -> None:
+        self.dismiss()
+        event.prevent_default()
+
+
 class FilePickerApp(App):
     CSS = """
     Screen { layout: vertical; }
@@ -1781,6 +1837,7 @@ class FilePickerApp(App):
         Binding("space", "toggle_select", "Toggle", show=True),
         Binding("enter", "confirm", "Stage / Commit", show=True),
         Binding("slash", "activate_filter", "Filter", show=True),
+        Binding("f", "run_fmt", "Format", show=True),
     ]
 
     def __init__(
@@ -1811,11 +1868,6 @@ class FilePickerApp(App):
 
         # Ordered list of item_keys currently in the staged section
         self._staged_paths: list[str] = [ik for _, _, ik in self.orig_staged]
-
-        # Determine which optional sections to show
-        self._show_modified  = bool(self.orig_modified)  or any(s not in ("A", "?", "D") for s, _, _ in self.orig_staged)
-        self._show_deleted   = bool(self.orig_deleted)   or any(s == "D"               for s, _, _ in self.orig_staged)
-        self._show_untracked = bool(self.orig_untracked) or any(s in ("A", "?")        for s, _, _ in self.orig_staged)
 
         # Output
         self.to_stage: set[str] = set()
@@ -1864,38 +1916,38 @@ class FilePickerApp(App):
             yield Label("  Staged  (space to unstage)", classes="section-label")
             yield DataTable(id="staged", cursor_type="row", zebra_stripes=True)
             yield Input(id="filter-staged", placeholder="Filter…", classes="section-filter")
-        if self._show_modified:
-            with Vertical(classes="section"):
-                yield Label("  Modified  (space to stage)", classes="section-label")
-                yield DataTable(id="modified", cursor_type="row", zebra_stripes=True)
-                yield Input(id="filter-modified", placeholder="Filter…", classes="section-filter")
-        if self._show_deleted:
-            with Vertical(classes="section"):
-                yield Label("  Deleted  (space to stage)", classes="section-label")
-                yield DataTable(id="deleted", cursor_type="row", zebra_stripes=True)
-                yield Input(id="filter-deleted", placeholder="Filter…", classes="section-filter")
-        if self._show_untracked:
-            with Vertical(classes="section"):
-                yield Label("  Untracked  (space to stage)", classes="section-label")
-                yield DataTable(id="untracked", cursor_type="row", zebra_stripes=True)
-                yield Input(id="filter-untracked", placeholder="Filter…", classes="section-filter")
+        with Vertical(classes="section", id="section-modified"):
+            yield Label("  Modified  (space to stage)", classes="section-label")
+            yield DataTable(id="modified", cursor_type="row", zebra_stripes=True)
+            yield Input(id="filter-modified", placeholder="Filter…", classes="section-filter")
+        with Vertical(classes="section", id="section-deleted"):
+            yield Label("  Deleted  (space to stage)", classes="section-label")
+            yield DataTable(id="deleted", cursor_type="row", zebra_stripes=True)
+            yield Input(id="filter-deleted", placeholder="Filter…", classes="section-filter")
+        with Vertical(classes="section", id="section-untracked"):
+            yield Label("  Untracked  (space to stage)", classes="section-label")
+            yield DataTable(id="untracked", cursor_type="row", zebra_stripes=True)
+            yield Input(id="filter-untracked", placeholder="Filter…", classes="section-filter")
         yield Footer()
+
+    def _update_section_visibility(self) -> None:
+        show_modified  = bool(self.orig_modified)  or any(s not in ("A", "?", "D") for s, _, _ in self.orig_staged)
+        show_deleted   = bool(self.orig_deleted)   or any(s == "D"               for s, _, _ in self.orig_staged)
+        show_untracked = bool(self.orig_untracked) or any(s in ("A", "?")        for s, _, _ in self.orig_staged)
+        self.query_one("#section-modified").display  = show_modified
+        self.query_one("#section-deleted").display   = show_deleted
+        self.query_one("#section-untracked").display = show_untracked
 
     def on_mount(self) -> None:
         self._init_table("staged")
-        if self._show_modified:
-            self._init_table("modified")
-        if self._show_deleted:
-            self._init_table("deleted")
-        if self._show_untracked:
-            self._init_table("untracked")
-        # Focus the first non-empty non-staged table; fall back to staged.
+        self._init_table("modified")
+        self._init_table("deleted")
+        self._init_table("untracked")
+        self._update_section_visibility()
+        # Focus the first non-empty visible table; fall back to staged.
         for tid in ("modified", "deleted", "untracked", "staged"):
-            try:
-                t = self.query_one(f"#{tid}", DataTable)
-            except Exception:
-                continue
-            if t.row_count > 0:
+            t = self.query_one(f"#{tid}", DataTable)
+            if t.display and t.row_count > 0:
                 t.focus()
                 return
 
@@ -2069,6 +2121,35 @@ class FilePickerApp(App):
         self.aborted = True
         self.exit()
 
+    def action_run_fmt(self) -> None:
+        if isinstance(self.focused, Input):
+            return
+        self.push_screen(FmtModal(), self._on_fmt_closed)
+
+    def _on_fmt_closed(self, _: None) -> None:
+        self._reload_statuses()
+
+    def _reload_statuses(self) -> None:
+        """Re-fetch git status after external changes (e.g. formatting) and refresh all tables."""
+        staged, modified, deleted, untracked = _get_file_statuses()
+        self.orig_staged   = [(s, p, f"staged:{p}")    for s, p in staged]
+        self.orig_modified = [(s, p, f"modified:{p}")  for s, p in modified]
+        self.orig_deleted  = [(s, p, f"deleted:{p}")   for s, p in deleted]
+        self.orig_untracked= [(s, p, f"untracked:{p}") for s, p in untracked]
+        self.file_info = {}
+        for status, path, ik in self.orig_staged:
+            self.file_info[ik] = (status, "staged")
+        for status, path, ik in self.orig_modified:
+            self.file_info[ik] = (status, "modified")
+        for status, path, ik in self.orig_deleted:
+            self.file_info[ik] = (status, "deleted")
+        for status, path, ik in self.orig_untracked:
+            self.file_info[ik] = (status, "untracked")
+        # Drop any staged item_keys that no longer exist in the refreshed status
+        self._staged_paths = [ik for ik in self._staged_paths if ik in self.file_info]
+        self._update_section_visibility()
+        self._refresh_all()
+
 
 @main.command("branch")
 @click.argument("name", required=False)
@@ -2116,8 +2197,9 @@ def cmd_branch(name: str | None, show_all: bool) -> None:
 
     if name:
         branch_name = f"{ticket}-{name}"
-        click.echo(f"Creating branch: {branch_name}")
-        subprocess.run(["git", "switch", "-C", branch_name], check=True)
+        default_branch = _get_default_branch()
+        click.echo(f"Creating branch: {branch_name} (from {default_branch})")
+        subprocess.run(["git", "switch", "-C", branch_name, default_branch], check=True)
         return
 
     all_branches = _get_local_branches()
@@ -2183,6 +2265,193 @@ def cmd_add() -> None:
         subprocess.run(["git", "commit", "--no-verify", "-m", full_msg], check=True)
     elif not app.to_stage and not app.to_unstage:
         click.echo("No changes made.", err=True)
+
+
+# ---------------------------------------------------------------------------
+# jg fmt
+# ---------------------------------------------------------------------------
+
+@main.group("fmt", invoke_without_command=True)
+@click.pass_context
+def cmd_fmt(ctx: click.Context) -> None:
+    """Run configured formatters against modified files, or manage formatter config."""
+    if ctx.invoked_subcommand is None:
+        _run_formatters()
+
+
+def _get_binary_paths(paths: list[str], git_root: str) -> set[str]:
+    """Return the subset of paths that git identifies as binary (w/-text) via git ls-files --eol."""
+    if not paths:
+        return set()
+    result = subprocess.run(
+        ["git", "ls-files", "--eol", "--", *paths],
+        capture_output=True, text=True, cwd=git_root,
+    )
+    binary: set[str] = set()
+    for line in result.stdout.splitlines():
+        # Format: "i/<eol>\tw/<eol>\tattr/<attrs>\t<path>"
+        # Use split(None, 3) to handle varying whitespace between columns.
+        parts = line.split(None, 3)
+        if len(parts) < 4:
+            continue
+        w_eol = parts[1]  # e.g. "w/lf", "w/-text", "w/crlf"
+        path = parts[3]
+        if w_eol == "w/-text":
+            binary.add(path)
+    return binary
+
+
+def _fix_eof(abs_path: str) -> tuple[bool, str]:
+    """Ensure file ends with exactly one newline. Returns (ok, error_msg)."""
+    try:
+        with open(abs_path, "rb") as f:
+            content = f.read()
+        if not content:
+            return True, ""
+        fixed = content.rstrip(b"\r\n") + b"\n"
+        if fixed != content:
+            with open(abs_path, "wb") as f:
+                f.write(fixed)
+        return True, ""
+    except OSError as e:
+        return False, str(e)
+
+
+def _build_fmt_table() -> "tuple[str, object]":
+    """Run all formatters and return (message | None, table | None).
+
+    Returns ("clean", None) if working tree is clean.
+    Otherwise returns (None, rich.table.Table) with all results.
+    """
+    from rich.table import Table
+    from rich.text import Text
+
+    user_formatters = get_formatters()
+
+    staged, modified, deleted, untracked = _get_file_statuses()
+    seen: set[str] = set()
+    all_paths: list[str] = []
+    for _, path in staged + modified + untracked:
+        if path not in seen:
+            seen.add(path)
+            all_paths.append(path)
+
+    if not all_paths:
+        return "clean", None
+
+    git_root = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+    binary_paths = _get_binary_paths(all_paths, git_root)
+
+    table = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
+    table.add_column("", width=1, no_wrap=True)
+    table.add_column("File", style="dim")
+    table.add_column("Formatter", style="cyan", no_wrap=True)
+    table.add_column("Exit", no_wrap=True)
+    table.add_column("Note", style="red")
+
+    for path in sorted(all_paths):
+        abs_path = os.path.join(git_root, path)
+        basename = os.path.basename(path)
+
+        if path in binary_paths:
+            table.add_row(
+                Text("—", style="dim"),
+                Text(path, style="dim"),
+                Text("—", style="dim"),
+                Text("—", style="dim"),
+                Text("skipped (binary)", style="dim"),
+            )
+            continue
+
+        # Built-in eof formatter — runs on every text file
+        ok, err = _fix_eof(abs_path)
+        if ok:
+            table.add_row(Text("✓", style="bold green"), path, "eof", Text("0", style="green"), "")
+        else:
+            table.add_row(Text("✗", style="bold red"), path, "eof", Text("1", style="red"), err)
+
+        # User-configured formatters
+        for fmt in user_formatters:
+            if fnmatch.fnmatch(basename, fmt["glob"]):
+                cmd = fmt["cmd"].replace("{}", abs_path)
+                result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+                if result.returncode == 0:
+                    table.add_row(
+                        Text("✓", style="bold green"),
+                        path,
+                        fmt["name"],
+                        Text("0", style="green"),
+                        "",
+                    )
+                else:
+                    error_msg = (result.stderr or result.stdout or "").strip()
+                    table.add_row(
+                        Text("✗", style="bold red"),
+                        path,
+                        fmt["name"],
+                        Text(str(result.returncode), style="red"),
+                        error_msg,
+                    )
+
+    return None, table
+
+
+def _run_formatters() -> None:
+    from rich.console import Console
+
+    msg, table = _build_fmt_table()
+    if msg == "clean":
+        click.echo("Nothing to format — working tree clean.")
+        return
+    Console().print(table)
+
+
+@cmd_fmt.command("add")
+@click.argument("name", required=False)
+def cmd_fmt_add(name: str | None) -> None:
+    """Add a new formatter (prompts for glob and command)."""
+    formatters = get_formatters()
+    if not name:
+        name = click.prompt("Formatter name")
+    if any(f["name"] == name for f in formatters):
+        raise click.ClickException(
+            f"A formatter named '{name}' already exists. "
+            f"Delete it first with: jg fmt delete {name}"
+        )
+    glob_pattern = click.prompt("File glob (e.g. *.hcl, *.tf)")
+    cmd = click.prompt("Command (use {} for the filename, e.g. terragrunt hcl fmt {})")
+    formatters.append({"name": name, "glob": glob_pattern, "cmd": cmd})
+    set_formatters(formatters)
+    click.echo(f"Added formatter '{name}'.")
+
+
+@cmd_fmt.command("list")
+def cmd_fmt_list() -> None:
+    """List all configured formatters."""
+    formatters = get_formatters()
+    if not formatters:
+        click.echo("No formatters configured.")
+        return
+    for fmt in formatters:
+        click.echo(fmt["name"])
+        click.echo(f"  glob:    {fmt['glob']}")
+        click.echo(f"  command: {fmt['cmd']}")
+
+
+@cmd_fmt.command("delete")
+@click.argument("name")
+def cmd_fmt_delete(name: str) -> None:
+    """Delete a formatter by name."""
+    formatters = get_formatters()
+    new_formatters = [f for f in formatters if f["name"] != name]
+    if len(new_formatters) == len(formatters):
+        raise click.ClickException(f"No formatter named '{name}'.")
+    set_formatters(new_formatters)
+    click.echo(f"Deleted formatter '{name}'.")
 
 
 @main.command("push")
@@ -2594,6 +2863,14 @@ def config_list() -> None:
                 marker = " (default)" if f["name"] == default else ""
                 click.echo(f"filters.{proj}  {f['name']}{marker}")
                 click.echo(f"  jql: {f['jql']}")
+
+    formatters = get_formatters()
+    if formatters:
+        click.echo()
+        for fmt in formatters:
+            click.echo(f"fmt  {fmt['name']}")
+            click.echo(f"  glob:    {fmt['glob']}")
+            click.echo(f"  command: {fmt['cmd']}")
 
 
 

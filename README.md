@@ -386,6 +386,7 @@ The screen is split into sections: **Staged** (always shown), plus **Modified**,
 |---|---|
 | `↑` / `↓` | Move between files |
 | `Space` | Stage or unstage the highlighted file |
+| `f` | Run formatters — opens a results modal, then reloads git status on close |
 | `/` | Open filter bar for the focused section |
 | `Enter` | Open commit message prompt (or confirm filter and return to list) |
 | `Escape` | Close filter / cancel |
@@ -417,6 +418,55 @@ jg commit "fix login redirect" --amend
 ```
 
 > **Note:** Refuses to run on `main` or `master`. Use `jg branch <name>` to create a feature branch first.
+
+---
+
+### `jg fmt`
+
+Run formatters against all modified, staged, and untracked files in the current repo.
+
+```sh
+jg fmt
+```
+
+Results are shown as a table with columns for status, file, formatter name, exit code, and a note:
+
+```
+  File              Formatter             Exit  Note
+✓ main.hcl          eof                   0
+✓ main.hcl          terragrunt-hcl-fmt    0
+✗ broken.hcl        terragrunt-hcl-fmt    1     invalid HCL on line 4
+— logo.png          —                     —     skipped (binary)
+```
+
+**Built-in formatter: `eof`**
+
+The `eof` formatter always runs on every text file. It ensures each file ends with exactly one newline, stripping any extra trailing newlines. It cannot be removed.
+
+**Binary file detection**
+
+Before running any formatter, `jg fmt` uses `git ls-files --eol` to identify binary files. Binary files are shown in the table as `skipped (binary)` and no formatter is run on them, even if their extension would otherwise match.
+
+**User-configured formatters**
+
+Each formatter has a name, a file glob (matched against the filename), and a command. Use `{}` in the command as a placeholder for the absolute file path — similar to `find -exec`.
+
+```sh
+jg fmt add                        # interactive prompts for name, glob, and command
+jg fmt add terragrunt-hcl-fmt     # supply the name upfront
+jg fmt list                       # list all configured formatters
+jg fmt delete terragrunt-hcl-fmt  # remove a formatter by name
+```
+
+**Example — adding a HCL formatter:**
+
+```
+Formatter name: terragrunt-hcl-fmt
+File glob (e.g. *.hcl, *.tf): *.hcl
+Command (use {} for the filename): /usr/local/bin/terragrunt hcl fmt {}
+```
+
+Formatter configuration is stored in `~/.config/jira-git-helper/config` under the `fmt` key and is also visible in `jg config list`.
 
 ---
 
