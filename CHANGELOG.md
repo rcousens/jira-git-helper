@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.17.0
+
+### Removed: `jg diff`
+
+- `jg diff` has been removed. Its functionality is fully covered by `jg prs` — open the PR browser, then press `d` to view the diff inline with search, file navigation, and delta support. `jg prs` also shows all PR statuses (open, merged, declined) without needing an `--all` flag.
+
+---
+
 ## v0.16.0
 
 ### `jg prune` — interactive TUI

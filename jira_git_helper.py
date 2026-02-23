@@ -3163,64 +3163,6 @@ def cmd_open(ticket: str | None) -> None:
     webbrowser.open(url)
 
 
-@main.command("diff")
-@click.argument("ticket", required=False)
-@click.option("--all", "show_all", is_flag=True, help="Include merged and declined PRs")
-def cmd_diff(ticket: str | None, show_all: bool) -> None:
-    """Diff a linked PR (open or draft) for the current (or given) ticket."""
-    if not shutil.which("gh"):
-        raise click.ClickException(
-            "gh CLI not found. Install it from https://cli.github.com"
-        )
-
-    key = ticket or get_ticket()
-    if not key:
-        click.echo("No ticket set. Use 'jg set TICKET-123' first.", err=True)
-        sys.exit(1)
-
-    jira = get_jira_client()
-    try:
-        issue = jira.issue(key, fields=["summary"])
-    except JIRAError as e:
-        raise click.ClickException(f"JIRA API error: {e.text}") from e
-
-    click.echo(f"Fetching PRs for {key}…", err=True)
-    try:
-        prs = _get_prs(issue.id)
-    except requests.HTTPError as e:
-        raise click.ClickException(f"Failed to fetch PRs: {e}") from e
-
-    if not show_all:
-        prs = [p for p in prs if p.get("status") in ("OPEN", "DRAFT")]
-
-    if not prs:
-        msg = f"No {'linked' if show_all else 'open or draft'} PRs found for {key}."
-        if not show_all:
-            msg += " Use --all to include merged/declined PRs."
-        raise click.ClickException(msg)
-
-    if len(prs) == 1:
-        pr = prs[0]
-    else:
-        app = PrPickerApp(prs)
-        app.run()
-        if not app.selected_pr:
-            click.echo("No PR selected.", err=True)
-            sys.exit(1)
-        pr = app.selected_pr
-
-    url    = pr["url"]
-    source = pr.get("source", {}).get("branch", "?")
-    dest   = pr.get("destination", {}).get("branch", "main")
-    status = pr.get("status", "")
-    title  = pr.get("name", "")
-
-    click.echo(f"\n  {title}")
-    click.echo(f"  {source} → {dest}  [{status}]")
-    click.echo(f"  {url}\n")
-
-    subprocess.run(["gh", "pr", "diff", url], check=True)
-
 
 @main.command("prs")
 @click.argument("ticket", required=False)

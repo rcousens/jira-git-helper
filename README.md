@@ -559,7 +559,7 @@ Uses `git branch -D` (force delete) so branches merged via squash or rebase are 
 
 ### `jg prs [TICKET]`
 
-Browse all GitHub PRs linked to a ticket in an interactive TUI, with inline diff viewing.
+Browse all GitHub PRs linked to a ticket in an interactive TUI.
 
 ```sh
 jg prs             # uses the active ticket
@@ -577,29 +577,9 @@ ones first, then by last-updated date. Status is colour-coded: green (open), yel
 | `↑` / `↓` | Move between PRs |
 | `/` | Open filter bar — searches status, author, repo, branch, and title |
 | `o` | Open the highlighted PR in your browser |
-| `d` | View the PR diff inline |
+| `d` | View the PR diff inline (uses [`delta`](https://github.com/dandavison/delta) if installed) |
 | `s` | Switch to the PR's source branch (creates from default branch if not found locally) |
 | `Escape` | Close filter / quit |
-
-**Diff viewer:**
-
-Press `d` on any PR (open or merged) to open a full-screen diff viewer. If
-[`delta`](https://github.com/dandavison/delta) is installed it is used for
-syntax-aware colouring; otherwise Rich syntax highlighting is applied.
-
-| Key | Action |
-|---|---|
-| `↑` / `↓` | Scroll the diff |
-| `/` | Open search bar — type a term and press `Enter` to commit the search |
-| `Enter` | Jump to the next match (cycles through all matches) |
-| `n` | Jump to the next file in the diff |
-| `p` | Jump to the previous file in the diff |
-| `Escape` | Clear active search, or close the diff viewer |
-
-An active search is shown in an amber status bar above the footer, displaying the
-search term and current position (e.g. `Search: foo  3/7 matches — Enter next  Esc clear`).
-All matches are highlighted inline. Press `Escape` once to clear the search, and
-again to close the diff viewer.
 
 > **Requires:** [`gh` CLI](https://cli.github.com) installed and authenticated.
 
