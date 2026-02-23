@@ -7,6 +7,9 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
+from textual.coordinate import Coordinate
+from textual.widgets import DataTable, Input
+
 from ..config import get_ticket
 from ..git import get_current_branch
 from ..jira_api import STATUS_STYLES, PRIORITY_STYLES, get_jira_server
@@ -65,9 +68,13 @@ FOOTER_CSS = f"""
 FILTER_BAR_CSS = f"""
     #filter-bar {{
         display: none;
-        border: tall {COL_GREEN};
+        border: solid {COL_AMBER};
         background: {COL_SURFACE};
-        color: {COL_GREEN};
+        color: {COL_AMBER};
+        height: 3;
+    }}
+    #filter-bar:focus {{
+        border: solid {COL_AMBER};
     }}
 """
 
@@ -140,6 +147,62 @@ def build_ticket_info(issue, jira_server: str) -> Group:
         Text(""),
         desc_block,
     )
+
+
+def cursor_row_key(table: DataTable) -> str | None:
+    """Return the row key at the cursor, or None if the table is empty."""
+    if table.row_count == 0:
+        return None
+    return table.coordinate_to_cell_key(Coordinate(table.cursor_row, 0)).row_key.value
+
+
+class FilterBarMixin:
+    """Shared #filter-bar + DataTable key handling.
+
+    Subclass must implement:
+        _reset_filter() -> None  — repopulate view with unfiltered data
+    """
+
+    def action_activate_filter(self) -> None:
+        """Show and focus the filter bar."""
+        bar = self.query_one("#filter-bar", Input)
+        bar.display = True
+        bar.focus()
+
+    def _handle_filter_keys(self, event) -> bool:
+        """Handle shared filter bar keys. Call from on_key(); returns True if handled."""
+        focused = self.focused
+        if isinstance(focused, Input) and focused.id == "filter-bar":
+            if event.key == "escape":
+                focused.value = ""
+                focused.display = False
+                self._reset_filter()
+                self.query_one(DataTable).focus()
+                event.prevent_default()
+                return True
+            if event.key == "enter":
+                self.query_one(DataTable).focus()
+                event.prevent_default()
+                return True
+            return True  # swallow other keys while Input has focus
+
+        table = self.query_one(DataTable)
+        bar = self.query_one("#filter-bar", Input)
+        if event.key == "down":
+            table.move_cursor(row=table.cursor_row + 1)
+            event.prevent_default()
+            return True
+        if event.key == "up":
+            table.move_cursor(row=table.cursor_row - 1)
+            event.prevent_default()
+            return True
+        if event.key == "escape" and bar.display:
+            bar.value = ""
+            bar.display = False
+            self._reset_filter()
+            event.prevent_default()
+            return True
+        return False
 
 
 def preview_raw_value(val) -> str:

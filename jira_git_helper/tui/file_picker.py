@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.coordinate import Coordinate
 from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Input, Label, Static
@@ -12,28 +11,17 @@ from textual.widgets import DataTable, Footer, Input, Label, Static
 from ..config import get_config, get_ticket
 from ..git import get_file_statuses
 from ..formatters import FILE_STATUS_LABELS
-from .theme import context_bar_text
+from .theme import CONTEXT_BAR_CSS, DATATABLE_CSS, FOOTER_CSS, context_bar_text, cursor_row_key
 from .modals import FmtModal
 
 
 class CommitModal(ModalScreen):
-    CSS = """
-    CommitModal {
-        align: center middle;
-        background: #0a0e0a 85%;
-    }
-    #dialog {
-        width: 64;
-        height: auto;
-        padding: 1 2;
-        border: thick #00ff41;
-        background: #0d1a0d;
-    }
+    CSS = FOOTER_CSS + """
+    CommitModal { align: center middle; background: #0a0e0a 85%; }
+    #dialog { width: 64; height: auto; padding: 1 2; border: thick #00ff41; background: #0d1a0d; }
     #title       { text-style: bold; padding-bottom: 1; color: #00ff41; }
     #hint        { color: #00e5ff; padding-bottom: 1; }
     #hint-escape { color: #4d8a4d; padding-bottom: 1; }
-    Footer { background: #0d1a0d; color: #4d8a4d; }
-    Footer > .footer--key { background: #152015; color: #00e5ff; }
     """
 
     BINDINGS = [Binding("escape", "cancel", "Stage without commit")]
@@ -67,46 +55,13 @@ class CommitModal(ModalScreen):
 
 
 class FilePickerApp(App):
-    CSS = """
+    CSS = CONTEXT_BAR_CSS + DATATABLE_CSS + FOOTER_CSS + """
     Screen { layout: vertical; background: #0a0e0a; }
-
-    .context-bar {
-        height: 1;
-        background: #0d1a0d;
-        color: #00ff41;
-        padding: 0 1;
-        text-style: bold;
-    }
-    .section {
-        height: 1fr;
-        border: tall #1a3a1a;
-    }
-    .section:focus-within {
-        border: tall #00ff41;
-    }
-    .section-label {
-        padding: 0 1;
-        background: #0d1a0d;
-        color: #00e5ff;
-        text-style: bold;
-    }
-    DataTable {
-        height: 1fr;
-        background: #0a0e0a;
-    }
-    DataTable > .datatable--header { background: #0d1a0d; color: #00e5ff; text-style: bold; }
-    DataTable > .datatable--cursor { background: #003d00; color: #00ff41; text-style: bold; }
-    DataTable > .datatable--hover  { background: #001a00; }
-    DataTable > .datatable--odd-row  { background: #080c08; color: #b8d4b8; }
-    DataTable > .datatable--even-row { background: #0a0e0a; color: #b8d4b8; }
-    .section-filter {
-        display: none;
-        border-top: tall #00ff41;
-        background: #0d1a0d;
-        color: #00ff41;
-    }
-    Footer { background: #0d1a0d; color: #4d8a4d; }
-    Footer > .footer--key { background: #152015; color: #00e5ff; }
+    .section { height: 1fr; border: tall #1a3a1a; }
+    .section:focus-within { border: tall #00ff41; }
+    .section-label { padding: 0 1; background: #0d1a0d; color: #00e5ff; text-style: bold; }
+    .section-filter { display: none; border: solid #ffb300; background: #0d1a0d; color: #ffb300; height: 3; }
+    .section-filter:focus { border: solid #ffb300; }
     """
 
     BINDINGS = [
@@ -347,10 +302,11 @@ class FilePickerApp(App):
 
     def action_toggle_select(self) -> None:
         table = self._focused_table()
-        if table is None or table.row_count == 0:
+        if table is None:
             return
-        cell_key = table.coordinate_to_cell_key(Coordinate(table.cursor_row, 0))
-        item_key = cell_key.row_key.value
+        item_key = cursor_row_key(table)
+        if item_key is None:
+            return
         cursor = table.cursor_row
 
         if table.id == "staged":

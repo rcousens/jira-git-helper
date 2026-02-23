@@ -39,6 +39,7 @@ from .git import (
     check_not_main_branch,
     get_default_branch,
     get_local_branches,
+    create_branch,
 )
 from .jira_api import (
     get_jira_server,
@@ -215,9 +216,7 @@ def cmd_branch(name: str | None, show_all: bool) -> None:
 
     if name:
         branch_name = f"{ticket}-{name}"
-        default_branch = get_default_branch()
-        click.echo(f"Creating branch: {branch_name} (from {default_branch})")
-        subprocess.run(["git", "switch", "-C", branch_name, default_branch], check=True)
+        create_branch(branch_name, get_default_branch())
         return
 
     if get_current_branch() in ("main", "master"):
@@ -228,9 +227,7 @@ def cmd_branch(name: str | None, show_all: bool) -> None:
             click.echo("Cancelled.", err=True)
             return
         branch_name = f"{ticket}-{prompt_app.branch_suffix}"
-        default_branch = get_default_branch()
-        click.echo(f"Creating branch: {branch_name} (from {default_branch})")
-        subprocess.run(["git", "switch", "-C", branch_name, default_branch], check=True)
+        create_branch(branch_name, get_default_branch())
 
     all_branches = get_local_branches()
     matching = [(b, cur) for b, cur in all_branches if ticket.lower() in b.lower()]
@@ -262,9 +259,7 @@ def cmd_add() -> None:
             click.echo("Cancelled.", err=True)
             return
         branch_name = f"{ticket}-{prompt_app.branch_suffix}"
-        default_branch = get_default_branch()
-        click.echo(f"Creating branch: {branch_name} (from {default_branch})")
-        subprocess.run(["git", "switch", "-C", branch_name, default_branch], check=True)
+        create_branch(branch_name, get_default_branch())
 
     staged, modified, deleted, untracked = get_file_statuses()
 
@@ -303,8 +298,7 @@ def cmd_add() -> None:
                 f"Not on a {ticket} branch. Branch suffix (will create {ticket}-<suffix>)"
             )
             branch_name = f"{ticket}-{suffix}"
-            click.echo(f"Creating branch: {branch_name}")
-            subprocess.run(["git", "switch", "-C", branch_name], check=True)
+            create_branch(branch_name)
         full_msg = f"{ticket} {app.commit_message}"
         subprocess.run(["git", "commit", "--no-verify", "-m", full_msg], check=True)
     elif not app.to_stage and not app.to_unstage:

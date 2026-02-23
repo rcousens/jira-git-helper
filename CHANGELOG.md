@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.21.0
+
+### Shared helpers to reduce TUI and CLI duplication
+
+Three new helpers consolidate repeated patterns across TUI apps and CLI commands.
+
+- **`cursor_row_key(table)`** in `tui/theme.py` — extracts the row key at the DataTable cursor, replacing a 4-line pattern that was duplicated across 7 call sites in `ticket_picker.py`, `branch.py`, `file_picker.py`, `pr_picker.py`, and `prune.py`.
+
+- **`FilterBarMixin`** in `tui/theme.py` — provides `action_activate_filter()` and `_handle_filter_keys()` for apps with a `#filter-bar` Input + DataTable. Subclasses implement `_reset_filter()` to repopulate their view. Applied to:
+  - `BranchPickerApp` — `on_key()` reduced from ~25 lines to 4.
+  - `PrPickerApp` — `on_key()` reduced from ~25 lines to 4.
+  - `JiraListApp` — partial use (custom Input handling for tree/table dual mode; mixin handles DataTable-mode navigation and escape-when-filter-visible).
+
+- **`create_branch(name, base=None)`** in `git.py` — consolidates `git switch -C` + echo logic used at 4 sites in `cli.py` (`cmd_branch` ×2, `cmd_add` ×2).
+
+No functionality changes — pure deduplication refactor.
+
+---
+
 ## v0.20.0
 
 ### Multi-module package refactor

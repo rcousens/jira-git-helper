@@ -9,12 +9,13 @@ from textual.screen import ModalScreen
 from textual.widgets import Footer, Input, Label, Static
 
 from ..formatters import build_fmt_table
+from .theme import FOOTER_CSS
 
 
 class TextInputModal(ModalScreen):
     """Generic single-line text prompt. Dismisses with the entered string, or None on cancel."""
 
-    CSS = """
+    CSS = FOOTER_CSS + """
     TextInputModal { align: center middle; background: #0a0e0a 80%; }
     #tip-dialog {
         width: 80%;
@@ -24,8 +25,6 @@ class TextInputModal(ModalScreen):
         background: #0d1a0d;
     }
     #tip-title { text-style: bold; padding-bottom: 1; color: #00ff41; }
-    Footer { background: #0d1a0d; color: #4d8a4d; }
-    Footer > .footer--key { background: #152015; color: #00e5ff; }
     """
 
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
@@ -57,7 +56,7 @@ class TextInputModal(ModalScreen):
 class ConfirmModal(ModalScreen):
     """Yes/No confirmation dialog. Dismisses with True (yes) or False (no)."""
 
-    CSS = """
+    CSS = FOOTER_CSS + """
     ConfirmModal { align: center middle; background: #0a0e0a 80%; }
     #confirm-dialog {
         width: 60;
@@ -68,8 +67,6 @@ class ConfirmModal(ModalScreen):
     }
     #confirm-message { padding-bottom: 1; color: #b8d4b8; }
     #confirm-hint { color: #ffb300; }
-    Footer { background: #0d1a0d; color: #4d8a4d; }
-    Footer > .footer--key { background: #152015; color: #00e5ff; }
     """
 
     BINDINGS = [

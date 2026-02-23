@@ -37,7 +37,11 @@ from ..jira_api import (
     STATUS_STYLES,
     PRIORITY_STYLES,
 )
-from .theme import context_bar_text, preview_raw_value, build_ticket_info
+from .theme import (
+    SCREEN_CSS, CONTEXT_BAR_CSS, DATATABLE_CSS, FILTER_BAR_CSS, FOOTER_CSS,
+    context_bar_text, preview_raw_value, build_ticket_info,
+    cursor_row_key, FilterBarMixin,
+)
 from .modals import TextInputModal, ConfirmModal
 
 
@@ -70,61 +74,13 @@ def ensure_ticket() -> str:
     return app.selected_ticket
 
 
-class JiraListApp(App):
-    CSS = """
-    Screen { background: #0a0e0a; }
-    .context-bar {
-        height: 1;
-        background: #0d1a0d;
-        color: #00ff41;
-        padding: 0 1;
-        text-style: bold;
-    }
-    DataTable {
-        height: 1fr;
-        background: #0a0e0a;
-    }
-    DataTable > .datatable--header {
-        background: #0d1a0d;
-        color: #00e5ff;
-        text-style: bold;
-    }
-    DataTable > .datatable--cursor {
-        background: #003d00;
-        color: #00ff41;
-        text-style: bold;
-    }
-    DataTable > .datatable--hover { background: #001a00; }
-    DataTable > .datatable--odd-row  { background: #080c08; color: #b8d4b8; }
-    DataTable > .datatable--even-row { background: #0a0e0a; color: #b8d4b8; }
-    Tree {
-        height: 1fr;
-        background: #0a0e0a;
-        display: none;
-        padding: 0 1;
-        color: #b8d4b8;
-    }
-    Tree > .tree--cursor {
-        background: #003d00;
-        text-style: bold;
-    }
+class JiraListApp(FilterBarMixin, App):
+    CSS = SCREEN_CSS + CONTEXT_BAR_CSS + DATATABLE_CSS + FILTER_BAR_CSS + FOOTER_CSS + """
+    Tree { height: 1fr; background: #0a0e0a; display: none; padding: 0 1; color: #b8d4b8; }
+    Tree > .tree--cursor { background: #003d00; text-style: bold; }
     Tree > .tree--guides       { color: #1a3a1a; }
     Tree > .tree--guides-hover { color: #2a5a2a; }
-    #filter-bar {
-        display: none;
-        border: tall #00ff41;
-        background: #0d1a0d;
-        color: #00ff41;
-    }
-    #filter-status {
-        height: 1;
-        background: #0d1a0d;
-        color: #ffb300;
-        padding: 0 1;
-        display: none;
-    }
-    Footer { background: #0d1a0d; color: #4d8a4d; }
-    Footer > .footer--key { background: #152015; color: #00e5ff; }
+    #filter-status { height: 1; background: #0d1a0d; color: #ffb300; padding: 0 1; display: none; }
     """
 
     BINDINGS = [
@@ -336,57 +292,44 @@ class JiraListApp(App):
         focused = self.focused
         filter_bar = self.query_one("#filter-bar", Input)
 
-        if isinstance(focused, Input):
+        # Custom Input handling for tree/table dual mode
+        if isinstance(focused, Input) and focused.id == "filter-bar":
             if event.key == "escape":
                 focused.value = ""
                 focused.display = False
-                if self._tree_mode:
-                    self._populate_tree()
-                    self.query_one(Tree).focus()
-                else:
-                    self._populate_table(self.all_issues)
-                    self.query_one(DataTable).focus()
+                self._reset_filter()
+                (self.query_one(Tree) if self._tree_mode else self.query_one(DataTable)).focus()
                 event.prevent_default()
                 return
             if event.key == "enter":
                 (self.query_one(Tree) if self._tree_mode else self.query_one(DataTable)).focus()
                 event.prevent_default()
                 return
+            return
 
         if self._tree_mode:
             if event.key == "escape" and filter_bar.display:
                 filter_bar.value = ""
                 filter_bar.display = False
-                self._populate_tree()
+                self._reset_filter()
                 event.prevent_default()
             return
 
-        table = self.query_one(DataTable)
-        if event.key == "down":
-            table.move_cursor(row=table.cursor_row + 1)
-            event.prevent_default()
-        elif event.key == "up":
-            table.move_cursor(row=table.cursor_row - 1)
-            event.prevent_default()
-        elif event.key == "enter":
+        # Delegate DataTable-mode keys to mixin
+        if self._handle_filter_keys(event):
+            return
+        if event.key == "enter":
             self.action_select_ticket()
             event.prevent_default()
-        elif event.key == "escape" and filter_bar.display:
-            filter_bar.value = ""
-            filter_bar.display = False
-            self._populate_table(self.all_issues)
-            event.prevent_default()
 
-    def action_activate_filter(self) -> None:
-        filter_bar = self.query_one("#filter-bar", Input)
-        filter_bar.display = True
-        filter_bar.focus()
+    def _reset_filter(self) -> None:
+        if self._tree_mode:
+            self._populate_tree()
+        else:
+            self._populate_table(self.all_issues)
 
     def _cursor_key(self) -> str | None:
-        table = self.query_one(DataTable)
-        if table.row_count == 0:
-            return None
-        return table.coordinate_to_cell_key(Coordinate(table.cursor_row, 0)).row_key.value
+        return cursor_row_key(self.query_one(DataTable))
 
     def action_select_ticket(self) -> None:
         if isinstance(self.focused, Input):
@@ -488,30 +431,11 @@ class JiraListApp(App):
 
 
 class FieldPickerModal(ModalScreen):
-    CSS = """
-    FieldPickerModal {
-        align: center middle;
-        background: #0a0e0a 85%;
-    }
-    #fp-dialog {
-        width: 95%;
-        height: 90%;
-        border: thick #00ff41;
-        background: #0d1a0d;
-    }
-    #fp-title {
-        text-style: bold;
-        padding: 0 1;
-        background: #152015;
-        color: #00ff41;
-    }
+    CSS = DATATABLE_CSS + FOOTER_CSS + """
+    FieldPickerModal { align: center middle; background: #0a0e0a 85%; }
+    #fp-dialog { width: 95%; height: 90%; border: thick #00ff41; background: #0d1a0d; }
+    #fp-title { text-style: bold; padding: 0 1; background: #152015; color: #00ff41; }
     #fp-table { height: 1fr; }
-    DataTable > .datatable--header { background: #0d1a0d; color: #00e5ff; text-style: bold; }
-    DataTable > .datatable--cursor { background: #003d00; color: #00ff41; text-style: bold; }
-    DataTable > .datatable--odd-row  { background: #080c08; color: #b8d4b8; }
-    DataTable > .datatable--even-row { background: #0a0e0a; color: #b8d4b8; }
-    Footer { background: #0d1a0d; color: #4d8a4d; }
-    Footer > .footer--key { background: #152015; color: #00e5ff; }
     """
 
     BINDINGS = [
@@ -554,11 +478,9 @@ class FieldPickerModal(ModalScreen):
     def on_key(self, event) -> None:
         if event.key == "space":
             table = self.query_one("#fp-table", DataTable)
-            if table.row_count == 0:
+            fid = cursor_row_key(table)
+            if fid is None:
                 return
-            fid = table.coordinate_to_cell_key(
-                Coordinate(table.cursor_row, 0)
-            ).row_key.value
             if fid in self.selected_ids:
                 self.selected_ids.discard(fid)
             else:
@@ -584,27 +506,11 @@ class FieldPickerModal(ModalScreen):
 class FilterListModal(ModalScreen):
     """Manage named JQL filters for a single project."""
 
-    CSS = """
+    CSS = DATATABLE_CSS + FOOTER_CSS + """
     FilterListModal { align: center middle; background: #0a0e0a 85%; }
-    #fl-dialog {
-        width: 95%;
-        height: 90%;
-        border: thick #00ff41;
-        background: #0d1a0d;
-    }
-    #fl-header {
-        text-style: bold;
-        padding: 0 1;
-        background: #152015;
-        color: #00ff41;
-    }
+    #fl-dialog { width: 95%; height: 90%; border: thick #00ff41; background: #0d1a0d; }
+    #fl-header { text-style: bold; padding: 0 1; background: #152015; color: #00ff41; }
     #fl-table { height: 1fr; }
-    DataTable > .datatable--header { background: #0d1a0d; color: #00e5ff; text-style: bold; }
-    DataTable > .datatable--cursor { background: #003d00; color: #00ff41; text-style: bold; }
-    DataTable > .datatable--odd-row  { background: #080c08; color: #b8d4b8; }
-    DataTable > .datatable--even-row { background: #0a0e0a; color: #b8d4b8; }
-    Footer { background: #0d1a0d; color: #4d8a4d; }
-    Footer > .footer--key { background: #152015; color: #00e5ff; }
     """
 
     BINDINGS = [
@@ -657,12 +563,8 @@ class FilterListModal(ModalScreen):
             table.move_cursor(row=min(cursor, table.row_count - 1))
 
     def _cursor_idx(self) -> int | None:
-        table = self.query_one("#fl-table", DataTable)
-        if table.row_count == 0:
-            return None
-        return int(
-            table.coordinate_to_cell_key(Coordinate(table.cursor_row, 0)).row_key.value
-        )
+        key = cursor_row_key(self.query_one("#fl-table", DataTable))
+        return int(key) if key is not None else None
 
     def on_key(self, event) -> None:
         if event.key == "enter":
@@ -772,27 +674,12 @@ class FilterListModal(ModalScreen):
 
 
 class TicketInfoModal(ModalScreen):
-    CSS = """
-    TicketInfoModal {
-        align: center middle;
-        background: #0a0e0a 85%;
-    }
-    #ti-container {
-        width: 90%;
-        height: 90%;
-        border: thick #00ff41;
-        background: #0d1a0d;
-    }
-    #ti-title {
-        text-style: bold;
-        padding: 0 1;
-        background: #152015;
-        color: #00ff41;
-    }
+    CSS = FOOTER_CSS + """
+    TicketInfoModal { align: center middle; background: #0a0e0a 85%; }
+    #ti-container { width: 90%; height: 90%; border: thick #00ff41; background: #0d1a0d; }
+    #ti-title { text-style: bold; padding: 0 1; background: #152015; color: #00ff41; }
     #ti-scroll { height: 1fr; }
     #ti-content { padding: 1 2; color: #b8d4b8; }
-    Footer { background: #0d1a0d; color: #4d8a4d; }
-    Footer > .footer--key { background: #152015; color: #00e5ff; }
     """
 
     BINDINGS = [Binding("escape", "dismiss", "Close")]

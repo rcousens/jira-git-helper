@@ -6,37 +6,16 @@ import subprocess
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.coordinate import Coordinate
 from textual.widgets import DataTable, Footer, Static
 
 from ..git import get_default_branch
-from .theme import context_bar_text
+from .theme import SCREEN_CSS, CONTEXT_BAR_CSS, DATATABLE_CSS, FOOTER_CSS, context_bar_text, cursor_row_key
 from .modals import ConfirmModal
 from .branch import BranchDiffModal
 
 
 class PruneApp(App):
-    CSS = """
-    Screen { background: #0a0e0a; }
-    .context-bar {
-        height: 1;
-        background: #0d1a0d;
-        color: #00ff41;
-        padding: 0 1;
-        text-style: bold;
-    }
-    DataTable {
-        height: 1fr;
-        background: #0a0e0a;
-    }
-    DataTable > .datatable--header { background: #0d1a0d; color: #00e5ff; text-style: bold; }
-    DataTable > .datatable--cursor { background: #003d00; color: #00ff41; text-style: bold; }
-    DataTable > .datatable--hover  { background: #001a00; }
-    DataTable > .datatable--odd-row  { background: #080c08; color: #b8d4b8; }
-    DataTable > .datatable--even-row { background: #0a0e0a; color: #b8d4b8; }
-    Footer { background: #0d1a0d; color: #4d8a4d; }
-    Footer > .footer--key { background: #152015; color: #00e5ff; }
-    """
+    CSS = SCREEN_CSS + CONTEXT_BAR_CSS + DATATABLE_CSS + FOOTER_CSS
 
     BINDINGS = [
         Binding("escape", "quit", "Quit"),
@@ -90,11 +69,7 @@ class PruneApp(App):
         return " "
 
     def _cursor_branch(self) -> str | None:
-        table = self.query_one(DataTable)
-        if table.row_count == 0:
-            return None
-        cell_key = table.coordinate_to_cell_key(Coordinate(table.cursor_row, 0))
-        return cell_key.row_key.value
+        return cursor_row_key(self.query_one(DataTable))
 
     def action_toggle_select(self) -> None:
         name = self._cursor_branch()

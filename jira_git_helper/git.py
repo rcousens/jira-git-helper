@@ -85,6 +85,17 @@ def get_local_branches() -> list[tuple[str, bool]]:
     return branches
 
 
+def create_branch(name: str, base: str | None = None) -> None:
+    """Create and switch to *name*, optionally branching from *base*."""
+    cmd = ["git", "switch", "-C", name]
+    if base:
+        cmd.append(base)
+        click.echo(f"Creating branch: {name} (from {base})")
+    else:
+        click.echo(f"Creating branch: {name}")
+    subprocess.run(cmd, check=True)
+
+
 def copy_to_clipboard(text: str) -> bool:
     """Copy text to system clipboard. Returns True on success."""
     for cmd in (["pbcopy"], ["wl-copy"], ["xclip", "-selection", "clipboard"]):

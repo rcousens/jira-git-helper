@@ -8,30 +8,25 @@ import webbrowser
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.coordinate import Coordinate
 from textual.containers import ScrollableContainer
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Input, Static
 
 from ..jira_api import PR_STATUS_STYLES
-from .theme import context_bar_text
+from .theme import (
+    SCREEN_CSS, CONTEXT_BAR_CSS, DATATABLE_CSS, FILTER_BAR_CSS, FOOTER_CSS,
+    context_bar_text, cursor_row_key, FilterBarMixin,
+)
 
 
 class DiffModal(ModalScreen):
-    CSS = """
+    CSS = FOOTER_CSS + """
     DiffModal { background: #0a0e0a 92%; }
     #diff-scroll { width: 100%; height: 1fr; border: thick #00ff41; }
     #diff-content { padding: 0; }
-    #search-bar { display: none; background: #0d1a0d; color: #00ff41; border: tall #00ff41; }
-    #search-status {
-        display: none;
-        background: #ffb300;
-        color: #0a0e0a;
-        padding: 0 1;
-        text-style: bold;
-    }
-    Footer { background: #0d1a0d; color: #4d8a4d; }
-    Footer > .footer--key { background: #152015; color: #00e5ff; }
+    #search-bar { display: none; background: #0d1a0d; color: #ffb300; border: solid #ffb300; height: 3; }
+    #search-bar:focus { border: solid #ffb300; }
+    #search-status { display: none; background: #ffb300; color: #0a0e0a; padding: 0 1; text-style: bold; }
     """
 
     BINDINGS = [
@@ -202,34 +197,8 @@ class DiffModal(ModalScreen):
         self._scroll_to_line(self._file_starts[self._file_idx])
 
 
-class PrPickerApp(App):
-    CSS = """
-    Screen { background: #0a0e0a; }
-    .context-bar {
-        height: 1;
-        background: #0d1a0d;
-        color: #00ff41;
-        padding: 0 1;
-        text-style: bold;
-    }
-    DataTable {
-        height: 1fr;
-        background: #0a0e0a;
-    }
-    DataTable > .datatable--header { background: #0d1a0d; color: #00e5ff; text-style: bold; }
-    DataTable > .datatable--cursor { background: #003d00; color: #00ff41; text-style: bold; }
-    DataTable > .datatable--hover  { background: #001a00; }
-    DataTable > .datatable--odd-row  { background: #080c08; color: #b8d4b8; }
-    DataTable > .datatable--even-row { background: #0a0e0a; color: #b8d4b8; }
-    #filter-bar {
-        display: none;
-        border: tall #00ff41;
-        background: #0d1a0d;
-        color: #00ff41;
-    }
-    Footer { background: #0d1a0d; color: #4d8a4d; }
-    Footer > .footer--key { background: #152015; color: #00e5ff; }
-    """
+class PrPickerApp(FilterBarMixin, App):
+    CSS = SCREEN_CSS + CONTEXT_BAR_CSS + DATATABLE_CSS + FILTER_BAR_CSS + FOOTER_CSS
 
     BINDINGS = [
         Binding("escape", "quit", "Quit"),
@@ -294,48 +263,18 @@ class PrPickerApp(App):
         ])
 
     def on_key(self, event) -> None:
-        focused = self.focused
-        if isinstance(focused, Input):
-            if event.key == "escape":
-                focused.value = ""
-                focused.display = False
-                self._populate_table(list(enumerate(self.prs)))
-                self.query_one(DataTable).focus()
-                event.prevent_default()
-                return
-            if event.key == "enter":
-                self.query_one(DataTable).focus()
-                event.prevent_default()
-                return
-
-        filter_bar = self.query_one("#filter-bar", Input)
-        table = self.query_one(DataTable)
-        if event.key == "down":
-            table.move_cursor(row=table.cursor_row + 1)
-            event.prevent_default()
-        elif event.key == "up":
-            table.move_cursor(row=table.cursor_row - 1)
-            event.prevent_default()
-        elif event.key == "enter" and not self.open_on_enter:
+        if self._handle_filter_keys(event):
+            return
+        if event.key == "enter" and not self.open_on_enter:
             self.action_select_pr()
             event.prevent_default()
-        elif event.key == "escape" and filter_bar.display:
-            filter_bar.value = ""
-            filter_bar.display = False
-            self._populate_table(list(enumerate(self.prs)))
-            event.prevent_default()
 
-    def action_activate_filter(self) -> None:
-        filter_bar = self.query_one("#filter-bar", Input)
-        filter_bar.display = True
-        filter_bar.focus()
+    def _reset_filter(self) -> None:
+        self._populate_table(list(enumerate(self.prs)))
 
     def _selected_pr(self) -> dict | None:
-        table = self.query_one(DataTable)
-        if table.row_count == 0:
-            return None
-        cell_key = table.coordinate_to_cell_key(Coordinate(table.cursor_row, 0))
-        return self.prs[int(cell_key.row_key.value)]
+        key = cursor_row_key(self.query_one(DataTable))
+        return self.prs[int(key)] if key is not None else None
 
     def action_open_pr(self) -> None:
         if isinstance(self.focused, Input):

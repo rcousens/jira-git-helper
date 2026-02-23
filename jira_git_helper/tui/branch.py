@@ -7,13 +7,16 @@ import subprocess
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.coordinate import Coordinate
 from textual.containers import ScrollableContainer
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Input, Label, Static
 
 from ..jira_api import get_jira_server
-from .theme import context_bar_text, build_ticket_info
+from .theme import (
+    SCREEN_CSS, CONTEXT_BAR_CSS, DATATABLE_CSS, FILTER_BAR_CSS, FOOTER_CSS,
+    context_bar_text, build_ticket_info,
+    cursor_row_key, FilterBarMixin,
+)
 
 
 class BranchPromptApp(App):
@@ -23,29 +26,12 @@ class BranchPromptApp(App):
     The caller is responsible for creating the branch.
     """
 
-    CSS = """
-    Screen { background: #0a0e0a; }
-    #bp-title {
-        height: 1;
-        padding: 0 1;
-        background: #152015;
-        color: #00ff41;
-        text-style: bold;
-    }
+    CSS = SCREEN_CSS + FOOTER_CSS + """
+    #bp-title { height: 1; padding: 0 1; background: #152015; color: #00ff41; text-style: bold; }
     #bp-scroll { height: 1fr; }
     #bp-content { padding: 1 2; color: #b8d4b8; }
-    #bp-prompt-label {
-        height: 1;
-        padding: 0 1;
-        color: #ffb300;
-    }
-    #bp-input {
-        border: tall #00ff41;
-        background: #0a0e0a;
-        color: #00ff41;
-    }
-    Footer { background: #0d1a0d; color: #4d8a4d; }
-    Footer > .footer--key { background: #152015; color: #00e5ff; }
+    #bp-prompt-label { height: 1; padding: 0 1; color: #ffb300; }
+    #bp-input { border: tall #00ff41; background: #0a0e0a; color: #00ff41; }
     """
 
     BINDINGS = [
@@ -103,34 +89,8 @@ class BranchPromptApp(App):
         self.exit()
 
 
-class BranchPickerApp(App):
-    CSS = """
-    Screen { background: #0a0e0a; }
-    .context-bar {
-        height: 1;
-        background: #0d1a0d;
-        color: #00ff41;
-        padding: 0 1;
-        text-style: bold;
-    }
-    DataTable {
-        height: 1fr;
-        background: #0a0e0a;
-    }
-    DataTable > .datatable--header { background: #0d1a0d; color: #00e5ff; text-style: bold; }
-    DataTable > .datatable--cursor { background: #003d00; color: #00ff41; text-style: bold; }
-    DataTable > .datatable--hover  { background: #001a00; }
-    DataTable > .datatable--odd-row  { background: #080c08; color: #b8d4b8; }
-    DataTable > .datatable--even-row { background: #0a0e0a; color: #b8d4b8; }
-    #filter-bar {
-        display: none;
-        border: tall #00ff41;
-        background: #0d1a0d;
-        color: #00ff41;
-    }
-    Footer { background: #0d1a0d; color: #4d8a4d; }
-    Footer > .footer--key { background: #152015; color: #00e5ff; }
-    """
+class BranchPickerApp(FilterBarMixin, App):
+    CSS = SCREEN_CSS + CONTEXT_BAR_CSS + DATATABLE_CSS + FILTER_BAR_CSS + FOOTER_CSS
 
     BINDINGS = [
         Binding("escape", "quit", "Quit"),
@@ -175,49 +135,20 @@ class BranchPickerApp(App):
         self._populate_table(filtered)
 
     def on_key(self, event) -> None:
-        focused = self.focused
-        if isinstance(focused, Input):
-            if event.key == "escape":
-                focused.value = ""
-                focused.display = False
-                self._populate_table(self.all_branches)
-                self.query_one(DataTable).focus()
-                event.prevent_default()
-                return
-            if event.key == "enter":
-                self.query_one(DataTable).focus()
-                event.prevent_default()
-                return
-
-        filter_bar = self.query_one("#filter-bar", Input)
-        table = self.query_one(DataTable)
-        if event.key == "down":
-            table.move_cursor(row=table.cursor_row + 1)
-            event.prevent_default()
-        elif event.key == "up":
-            table.move_cursor(row=table.cursor_row - 1)
-            event.prevent_default()
-        elif event.key == "enter":
+        if self._handle_filter_keys(event):
+            return
+        if event.key == "enter":
             self.action_select_branch()
             event.prevent_default()
-        elif event.key == "escape" and filter_bar.display:
-            filter_bar.value = ""
-            filter_bar.display = False
-            self._populate_table(self.all_branches)
-            event.prevent_default()
 
-    def action_activate_filter(self) -> None:
-        filter_bar = self.query_one("#filter-bar", Input)
-        filter_bar.display = True
-        filter_bar.focus()
+    def _reset_filter(self) -> None:
+        self._populate_table(self.all_branches)
 
     def action_select_branch(self) -> None:
-        table = self.query_one(DataTable)
-        if table.row_count == 0:
-            return
-        cell_key = table.coordinate_to_cell_key(Coordinate(table.cursor_row, 0))
-        self.selected_branch = cell_key.row_key.value
-        self.exit()
+        key = cursor_row_key(self.query_one(DataTable))
+        if key:
+            self.selected_branch = key
+            self.exit()
 
     def action_quit(self) -> None:
         self.exit()
@@ -226,12 +157,10 @@ class BranchPickerApp(App):
 class BranchDiffModal(ModalScreen):
     """Full-screen diff of a branch against a base branch."""
 
-    CSS = """
+    CSS = FOOTER_CSS + """
     BranchDiffModal { background: #0a0e0a 92%; }
     #bdiff-scroll { width: 100%; height: 1fr; border: thick #00ff41; }
     #bdiff-content { padding: 0; }
-    Footer { background: #0d1a0d; color: #4d8a4d; }
-    Footer > .footer--key { background: #152015; color: #00e5ff; }
     """
 
     BINDINGS = [Binding("escape", "dismiss", "Close")]
