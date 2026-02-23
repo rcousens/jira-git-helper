@@ -172,6 +172,36 @@ Zsh — add to `~/.zshrc`:
 eval "$(jg hook --shell zsh)"
 ```
 
+### How the hook keeps shells isolated
+
+The hook sets a `JG_TICKET` environment variable that is local to each shell session.
+When `JG_TICKET` is defined (even if empty), `jg` commands use it exclusively and
+never read the shared state file. This prevents one shell from accidentally seeing
+another shell's ticket.
+
+- **`jg set`** → writes the ticket to the state file *and* updates `JG_TICKET` in the
+  current shell.
+- **`jg clear`** → deletes the state file *and* sets `JG_TICKET` to an empty string.
+  The empty string is important — it tells `jg` "there is no ticket" without falling
+  back to the state file (which another shell may have since written to).
+- **New shell** → the seed block reads the state file once and sets `JG_TICKET`. After
+  that, the state file is not consulted again in that shell.
+
+### Updating the hook after upgrading
+
+The hook is generated at eval time. After upgrading `jg`, re-source the hook in any
+open shells to pick up changes:
+
+```sh
+# fish
+source (jg hook | psub)
+
+# bash / zsh
+eval "$(jg hook --shell bash)"   # or zsh
+```
+
+Or simply restart your terminal.
+
 ---
 
 ## Prompt integration

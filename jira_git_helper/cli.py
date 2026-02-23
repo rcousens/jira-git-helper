@@ -762,12 +762,11 @@ def cmd_hook(shell: str) -> None:
     """Print the shell hook to set JG_TICKET in the current shell."""
     if shell == "fish":
         click.echo(f"""\
-# Seed JG_TICKET from the persisted default when this shell starts
+# Seed JG_TICKET from the persisted default when this shell starts.
+# Always set the variable (even to "") so get_ticket() knows the hook is
+# active and won't fall back to the state file from another shell.
 if not set -q JG_TICKET
-    set -l _jg_default (cat {STATE_FILE} 2>/dev/null)
-    if test -n "$_jg_default"
-        set -gx JG_TICKET $_jg_default
-    end
+    set -gx JG_TICKET (cat {STATE_FILE} 2>/dev/null)
 end
 
 function jg
@@ -788,19 +787,17 @@ function jg
                 end
             end
         case clear
-            set -e JG_TICKET
+            set -gx JG_TICKET ""
     end
     return $_jg_exit
 end""")
     else:
         click.echo(f"""\
-# Seed JG_TICKET from the persisted default when this shell starts
-if [ -z "${{JG_TICKET:-}}" ]; then
-    _jg_default=$(cat {STATE_FILE} 2>/dev/null)
-    if [ -n "$_jg_default" ]; then
-        export JG_TICKET="$_jg_default"
-    fi
-    unset _jg_default
+# Seed JG_TICKET from the persisted default when this shell starts.
+# Always set the variable (even to "") so get_ticket() knows the hook is
+# active and won't fall back to the state file from another shell.
+if [ -z "${{JG_TICKET+x}}" ]; then
+    export JG_TICKET="$(cat {STATE_FILE} 2>/dev/null)"
 fi
 
 # Splice into your prompt:
@@ -836,7 +833,7 @@ jg() {{
             fi
             ;;
         clear)
-            unset JG_TICKET
+            export JG_TICKET=""
             ;;
     esac
     return $_jg_exit
@@ -849,7 +846,7 @@ def cmd_setup() -> None:
     tide_fn_file = Path.home() / ".config" / "fish" / "functions" / "_tide_item_jg.fish"
     fish_fn = """\
 function _tide_item_jg
-    if set -q JG_TICKET
+    if set -q JG_TICKET; and test -n "$JG_TICKET"
         _tide_print_item jg $tide_jg_icon' ' $JG_TICKET
     end
 end

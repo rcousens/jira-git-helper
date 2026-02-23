@@ -17,6 +17,26 @@ Three new helpers consolidate repeated patterns across TUI apps and CLI commands
 
 No functionality changes — pure deduplication refactor.
 
+### Shell hook: fix cross-shell ticket bleed after `jg clear`
+
+Fixed a bug where clearing a ticket in one shell (`jg clear`) and then setting a ticket in a second shell would cause the first shell to silently pick up the second shell's ticket — despite the prompt showing no active ticket.
+
+**Root cause:** `jg clear` deleted the state file and unset `JG_TICKET` entirely. `get_ticket()` could not distinguish "hook active, ticket cleared" from "no hook installed", so it fell through to reading the state file — which another shell had since written to.
+
+**Fix:** The hook now sets `JG_TICKET=""` (empty string) on clear instead of unsetting it. `get_ticket()` treats any defined `JG_TICKET` (including empty) as authoritative and never falls back to the state file. The state file fallback only applies in shells without the hook installed.
+
+**Breaking change for existing hook users:** You must re-source the hook in all open shells for the fix to take effect:
+
+```sh
+# fish
+source (jg hook | psub)
+
+# bash / zsh
+eval "$(jg hook --shell bash)"   # or zsh
+```
+
+Or simply restart your terminal.
+
 ---
 
 ## v0.20.0

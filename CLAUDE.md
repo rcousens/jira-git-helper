@@ -346,6 +346,67 @@ queries and event handling.
 
 ---
 
+## Shell integration and ticket state
+
+### How `get_ticket()` resolves the active ticket
+
+`get_ticket()` in `config.py` uses a two-tier strategy:
+
+1. **`JG_TICKET` env var** (set by the shell hook) — if the variable exists in the
+   environment (even if empty), it is the sole authority. An empty string means "ticket
+   was explicitly cleared". `get_ticket()` returns `None` without reading the state file.
+
+2. **State file** (`~/.local/share/jira-git-helper/ticket`) — only consulted when
+   `JG_TICKET` is completely absent from the environment, i.e. the hook is not installed.
+
+```python
+env = os.environ.get("JG_TICKET")
+if env is not None:          # hook is active — trust env var exclusively
+    return env.strip() or None
+# no hook — fall back to state file
+```
+
+**Why this matters:** without this distinction, `jg clear` in shell A (which deletes the
+state file) followed by `jg set` in shell B (which writes a new ticket to the state file)
+would cause shell A to silently pick up shell B's ticket the next time any `jg` command
+ran — because `JG_TICKET` was unset (not empty) and the state file now had a value.
+
+### The shell hook contract
+
+The hook (emitted by `jg hook`) guarantees:
+
+- **On shell startup**: `JG_TICKET` is always defined after the seed block runs, even if
+  the state file is missing or empty. This marks "hook is active".
+- **After `jg set` / `jg branch --all`**: `JG_TICKET` is updated from the state file.
+- **After `jg clear`**: `JG_TICKET` is set to `""` (empty string), NOT unset. This is
+  the critical invariant — it tells `get_ticket()` to return `None` without reading the
+  state file.
+
+### Sentinel value: empty string vs unset
+
+| `JG_TICKET` state | Meaning | `get_ticket()` behaviour |
+|---|---|---|
+| Not in environ | No hook installed | Falls back to state file |
+| `""` (empty) | Hook active, ticket cleared | Returns `None` (no file read) |
+| `"SWY-1234"` | Hook active, ticket set | Returns `"SWY-1234"` |
+
+**Rules for modifying hook or ticket logic:**
+- Never `unset`/`set -e` `JG_TICKET` — always set it to `""` to clear.
+- Never add a state file fallback when `JG_TICKET` is defined (even if empty).
+- The seed block must always define `JG_TICKET`, even when the state file is missing.
+- Prompt functions (`_tide_item_jg`, `__jg_ps1`) must check for non-empty, not just defined.
+
+### State file vs env var: who writes what
+
+| Operation | State file | `JG_TICKET` (via hook) |
+|---|---|---|
+| `jg set TICKET` | Written by `save_ticket()` | Updated by hook wrapper |
+| `jg clear` | Deleted by `clear_ticket()` | Set to `""` by hook wrapper |
+| `jg branch --all` | Written by `save_ticket()` | Updated by hook wrapper |
+| New shell opens | Read once by seed block | Set from file (or `""` if missing) |
+
+---
+
 ## Colour palette
 
 | Role | Hex | Used for |

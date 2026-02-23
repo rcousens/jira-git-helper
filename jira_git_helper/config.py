@@ -21,9 +21,13 @@ _session_active_filters: dict[str, str | None] = {}
 
 
 def get_ticket() -> str | None:
-    # Prefer the shell env var (set by the fish hook) so multiple shells stay independent
-    if env := os.environ.get("JG_TICKET"):
-        return env or None
+    # When the shell hook is active, JG_TICKET is always defined (possibly empty after
+    # `jg clear`).  Trust it exclusively so shells stay independent and a cleared shell
+    # never accidentally reads another shell's ticket from STATE_FILE.
+    env = os.environ.get("JG_TICKET")
+    if env is not None:
+        return env.strip() or None
+    # No hook — fall back to the persisted file (single-shell / no-hook setups).
     if STATE_FILE.exists():
         return STATE_FILE.read_text().strip() or None
     return None
