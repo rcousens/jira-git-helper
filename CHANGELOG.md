@@ -43,26 +43,26 @@
 
 ---
 
-## 0.9.0
+## v0.9.0
 
 - Per-project JQL via `jql.<PROJECT>` config key
 - Multi-project merged ticket list
 - `jg prs` — interactive PR browser with filter bar
 - `jg branch --all` — browse all project branches and update the active ticket
 
-## 0.7.0
+## v0.7.0
 
 - Interactive `jg add` TUI (stage/unstage files, commit message prompt)
 - Shell hook for per-terminal ticket isolation (`jg hook`)
 - Fish/Tide prompt integration (`jg setup`)
 
-## 0.6.0
+## v0.6.0
 
 - `jg info` command
 - `jg open` command
 - `jg push` opens linked PR after pushing
 
-## 0.5.0
+## v0.5.0
 
 - Initial release: `jg set`, `jg clear`, `jg branch`, `jg commit`, `jg push`
 - Config system (`jg config set/get/list`)
