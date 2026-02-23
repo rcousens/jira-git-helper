@@ -1,5 +1,67 @@
 # Changelog
 
+## v0.16.0
+
+### `jg prune` — interactive TUI
+
+`jg prune` is now a full interactive DataTable instead of a confirm-and-delete prompt.
+
+- **Two categories of prunable branches** are shown: `remote deleted` (upstream existed and was deleted, typically after a merged PR) and `never pushed` (local-only branch that was never pushed to remote). Previously only "remote deleted" branches were caught; "never pushed" branches are now included.
+- **`Space`** — toggle a branch for deletion.
+- **`a`** — select / deselect all branches.
+- **`d`** — view a diff of the highlighted branch against the default branch (`main`/`master`) in a full-screen viewer. Uses [`delta`](https://github.com/dandavison/delta) if installed, otherwise Rich syntax highlighting.
+- **`x`** — delete all selected branches (confirmation prompt before deleting).
+- **`s`** — switch to the highlighted branch and exit.
+- **`Escape`** — quit without changes.
+
+### `jg prs` — switch to PR branch
+
+- **`s` — switch branch**: press `s` on any PR to switch to its source branch. If the branch exists locally, `git switch <branch>` is run immediately. If not, a warning is printed and the branch is created from the default branch (`git switch -c <branch> <default>`).
+
+### Context bar in all TUI screens
+
+All interactive screens now show a one-line header displaying the active ticket and current git branch:
+
+```
+ticket: SWY-1234   branch: SWY-1234-my-feature
+```
+
+This appears at the top of `jg set`, `jg add`, `jg branch`, and `jg prs`.
+
+### Visual theme overhaul
+
+All TUI screens and modals now use a consistent dark hacker-style colour palette — near-black backgrounds, matrix green accents, cyan for headers and key chips, amber for status and warnings. Every `$theme-variable` reference has been replaced with explicit hex colours for full visual control.
+
+### `jg add` — auto-fmt crash fix
+
+- Fixed a crash when `fmt.on_commit` is enabled and the auto-formatter clears all staged files (e.g. the formatter rewrites a file that was the only staged change). The commit modal no longer opens in this case — instead, `jg add` exits cleanly.
+
+---
+
+## v0.15.0
+
+### New command: `jg prune`
+
+- Runs `git fetch --prune` to refresh remote-tracking refs, then lists every local branch whose upstream is gone (i.e. the remote branch was deleted — typically after a PR was merged). Shows the list with a confirmation prompt before deleting. Uses `git branch -D` so squash-merged and rebase-merged branches are handled correctly. Skips the currently checked-out branch and reports any failures individually.
+
+### New command: `jg sync`
+
+- Fetches from origin and rebases the current feature branch onto `origin/<default-branch>` (auto-detected). Keeps you on your branch — unlike `jg reset` which switches away to the default branch. If a rebase conflict occurs, git's standard conflict resolution flow applies (`git rebase --continue` / `--abort`).
+
+### `jg set` — copy ticket URL
+
+- **`c` — copy URL**: press `c` on any ticket to copy its JIRA URL to the system clipboard. A toast notification confirms the URL. Supports `pbcopy` (macOS), `wl-copy` (Wayland), and `xclip` (X11).
+
+### `jg add` — auto-format on commit
+
+- New config flag `fmt.on_commit`: when set to `true`, the format modal runs automatically before the commit message prompt every time you press `Enter` to commit in `jg add`. Git status is reloaded after formatting before the prompt opens.
+
+  ```sh
+  jg config set fmt.on_commit true
+  ```
+
+---
+
 ## v0.14.0
 
 ### New command: `jg fmt`

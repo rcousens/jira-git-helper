@@ -217,6 +217,18 @@ def get_jira_server() -> str:
     return server.rstrip("/")
 
 
+def _copy_to_clipboard(text: str) -> bool:
+    """Copy text to system clipboard. Returns True on success."""
+    for cmd in (["pbcopy"], ["wl-copy"], ["xclip", "-selection", "clipboard"]):
+        try:
+            result = subprocess.run(cmd, input=text.encode(), capture_output=True)
+            if result.returncode == 0:
+                return True
+        except FileNotFoundError:
+            continue
+    return False
+
+
 def get_default_jql() -> str:
     """Return the JQL to use when no project has been explicitly selected.
 
@@ -320,23 +332,56 @@ def fetch_issues_for_projects(
 # --- TUI ---
 
 
+def _context_bar_text() -> str:
+    """Return a one-line context string showing the active ticket and current branch."""
+    ticket = get_ticket() or "—"
+    branch = _get_current_branch() or "—"
+    return f"  ticket: {ticket}   branch: {branch}"
+
+
 class JiraListApp(App):
     CSS = """
+    Screen { background: #0a0e0a; }
+    .context-bar {
+        height: 1;
+        background: #0d1a0d;
+        color: #00ff41;
+        padding: 0 1;
+        text-style: bold;
+    }
     DataTable {
         height: 1fr;
+        background: #0a0e0a;
     }
+    DataTable > .datatable--header {
+        background: #0d1a0d;
+        color: #00e5ff;
+        text-style: bold;
+    }
+    DataTable > .datatable--cursor {
+        background: #003d00;
+        color: #00ff41;
+        text-style: bold;
+    }
+    DataTable > .datatable--hover { background: #001a00; }
+    DataTable > .datatable--odd-row  { background: #080c08; color: #b8d4b8; }
+    DataTable > .datatable--even-row { background: #0a0e0a; color: #b8d4b8; }
     #filter-bar {
         dock: bottom;
         display: none;
-        border: tall $accent;
+        border: tall #00ff41;
+        background: #0d1a0d;
+        color: #00ff41;
     }
     #filter-status {
         height: 1;
-        background: $panel;
-        color: $text-muted;
+        background: #0d1a0d;
+        color: #ffb300;
         padding: 0 1;
         display: none;
     }
+    Footer { background: #0d1a0d; color: #4d8a4d; }
+    Footer > .footer--key { background: #152015; color: #00e5ff; }
     """
 
     BINDINGS = [
@@ -344,6 +389,7 @@ class JiraListApp(App):
         Binding("enter", "select_ticket", "Select", show=True),
         Binding("i", "show_info", "Info", show=True),
         Binding("o", "open_ticket", "Open", show=True),
+        Binding("c", "copy_url", "Copy URL", show=True),
         Binding("d", "show_fields", "Fields", show=True),
         Binding("f", "show_filters", "Filters", show=True),
         Binding("r", "refresh", "Refresh", show=True),
@@ -369,6 +415,7 @@ class JiraListApp(App):
         self.projects: list[str] = projects or []
 
     def compose(self) -> ComposeResult:
+        yield Static(_context_bar_text(), classes="context-bar")
         yield DataTable(cursor_type="row", zebra_stripes=True)
         yield Static("", id="filter-status")
         yield Input(id="filter-bar", placeholder="Filter…")
@@ -494,6 +541,18 @@ class JiraListApp(App):
             server = get_jira_server()
             webbrowser.open(f"{server}/browse/{key}")
 
+    def action_copy_url(self) -> None:
+        if isinstance(self.focused, Input):
+            return
+        key = self._cursor_key()
+        if not key:
+            return
+        url = f"{get_jira_server()}/browse/{key}"
+        if _copy_to_clipboard(url):
+            self.notify(f"Copied: {url}")
+        else:
+            self.notify("No clipboard utility found (install pbcopy, wl-copy, or xclip)", severity="warning")
+
     def action_show_fields(self) -> None:
         if isinstance(self.focused, Input) or self.jira_client is None:
             return
@@ -599,21 +658,27 @@ class FieldPickerModal(ModalScreen):
     CSS = """
     FieldPickerModal {
         align: center middle;
-        background: $background 80%;
+        background: #0a0e0a 85%;
     }
     #fp-dialog {
         width: 95%;
         height: 90%;
-        border: thick $accent;
-        background: $surface;
+        border: thick #00ff41;
+        background: #0d1a0d;
     }
     #fp-title {
         text-style: bold;
         padding: 0 1;
-        background: $boost;
-        color: $text-muted;
+        background: #152015;
+        color: #00ff41;
     }
     #fp-table { height: 1fr; }
+    DataTable > .datatable--header { background: #0d1a0d; color: #00e5ff; text-style: bold; }
+    DataTable > .datatable--cursor { background: #003d00; color: #00ff41; text-style: bold; }
+    DataTable > .datatable--odd-row  { background: #080c08; color: #b8d4b8; }
+    DataTable > .datatable--even-row { background: #0a0e0a; color: #b8d4b8; }
+    Footer { background: #0d1a0d; color: #4d8a4d; }
+    Footer > .footer--key { background: #152015; color: #00e5ff; }
     """
 
     BINDINGS = [
@@ -687,15 +752,17 @@ class TextInputModal(ModalScreen):
     """Generic single-line text prompt. Dismisses with the entered string, or None on cancel."""
 
     CSS = """
-    TextInputModal { align: center middle; background: $background 70%; }
+    TextInputModal { align: center middle; background: #0a0e0a 80%; }
     #tip-dialog {
         width: 80%;
         height: auto;
         padding: 1 2;
-        border: thick $accent;
-        background: $surface;
+        border: thick #00ff41;
+        background: #0d1a0d;
     }
-    #tip-title { text-style: bold; padding-bottom: 1; }
+    #tip-title { text-style: bold; padding-bottom: 1; color: #00ff41; }
+    Footer { background: #0d1a0d; color: #4d8a4d; }
+    Footer > .footer--key { background: #152015; color: #00e5ff; }
     """
 
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
@@ -728,16 +795,18 @@ class ConfirmModal(ModalScreen):
     """Yes/No confirmation dialog. Dismisses with True (yes) or False (no)."""
 
     CSS = """
-    ConfirmModal { align: center middle; background: $background 70%; }
+    ConfirmModal { align: center middle; background: #0a0e0a 80%; }
     #confirm-dialog {
         width: 60;
         height: auto;
         padding: 1 2;
-        border: thick $warning;
-        background: $surface;
+        border: thick #ffb300;
+        background: #0d1a0d;
     }
-    #confirm-message { padding-bottom: 1; }
-    #confirm-hint { color: $text-muted; }
+    #confirm-message { padding-bottom: 1; color: #b8d4b8; }
+    #confirm-hint { color: #ffb300; }
+    Footer { background: #0d1a0d; color: #4d8a4d; }
+    Footer > .footer--key { background: #152015; color: #00e5ff; }
     """
 
     BINDINGS = [
@@ -774,20 +843,26 @@ class FilterListModal(ModalScreen):
     """Manage named JQL filters for a single project."""
 
     CSS = """
-    FilterListModal { align: center middle; background: $background 80%; }
+    FilterListModal { align: center middle; background: #0a0e0a 85%; }
     #fl-dialog {
         width: 95%;
         height: 90%;
-        border: thick $accent;
-        background: $surface;
+        border: thick #00ff41;
+        background: #0d1a0d;
     }
     #fl-header {
         text-style: bold;
         padding: 0 1;
-        background: $boost;
-        color: $text-muted;
+        background: #152015;
+        color: #00ff41;
     }
     #fl-table { height: 1fr; }
+    DataTable > .datatable--header { background: #0d1a0d; color: #00e5ff; text-style: bold; }
+    DataTable > .datatable--cursor { background: #003d00; color: #00ff41; text-style: bold; }
+    DataTable > .datatable--odd-row  { background: #080c08; color: #b8d4b8; }
+    DataTable > .datatable--even-row { background: #0a0e0a; color: #b8d4b8; }
+    Footer { background: #0d1a0d; color: #4d8a4d; }
+    Footer > .footer--key { background: #152015; color: #00e5ff; }
     """
 
     BINDINGS = [
@@ -963,22 +1038,24 @@ class TicketInfoModal(ModalScreen):
     CSS = """
     TicketInfoModal {
         align: center middle;
-        background: $background 80%;
+        background: #0a0e0a 85%;
     }
     #ti-container {
         width: 90%;
         height: 90%;
-        border: thick $accent;
-        background: $surface;
+        border: thick #00ff41;
+        background: #0d1a0d;
     }
     #ti-title {
         text-style: bold;
         padding: 0 1;
-        background: $boost;
-        color: $text-muted;
+        background: #152015;
+        color: #00ff41;
     }
     #ti-scroll { height: 1fr; }
-    #ti-content { padding: 1 2; }
+    #ti-content { padding: 1 2; color: #b8d4b8; }
+    Footer { background: #0d1a0d; color: #4d8a4d; }
+    Footer > .footer--key { background: #152015; color: #00e5ff; }
     """
 
     BINDINGS = [Binding("escape", "dismiss", "Close")]
@@ -1092,19 +1169,40 @@ def _get_prs(issue_id: str) -> list[dict]:
 
 class PrPickerApp(App):
     CSS = """
-    DataTable { height: 1fr; }
+    Screen { background: #0a0e0a; }
+    .context-bar {
+        height: 1;
+        background: #0d1a0d;
+        color: #00ff41;
+        padding: 0 1;
+        text-style: bold;
+    }
+    DataTable {
+        height: 1fr;
+        background: #0a0e0a;
+    }
+    DataTable > .datatable--header { background: #0d1a0d; color: #00e5ff; text-style: bold; }
+    DataTable > .datatable--cursor { background: #003d00; color: #00ff41; text-style: bold; }
+    DataTable > .datatable--hover  { background: #001a00; }
+    DataTable > .datatable--odd-row  { background: #080c08; color: #b8d4b8; }
+    DataTable > .datatable--even-row { background: #0a0e0a; color: #b8d4b8; }
     #filter-bar {
         dock: bottom;
         display: none;
-        border: tall $accent;
+        border: tall #00ff41;
+        background: #0d1a0d;
+        color: #00ff41;
         margin-bottom: 1;
     }
+    Footer { background: #0d1a0d; color: #4d8a4d; }
+    Footer > .footer--key { background: #152015; color: #00e5ff; }
     """
 
     BINDINGS = [
         Binding("escape", "quit", "Quit"),
         Binding("o", "open_pr", "Open", show=True),
         Binding("d", "show_diff", "Diff", show=True),
+        Binding("s", "switch_branch", "Switch branch", show=True),
         Binding("slash", "activate_filter", "Filter", show=True),
     ]
 
@@ -1113,8 +1211,10 @@ class PrPickerApp(App):
         self.prs = prs
         self.selected_pr: dict | None = None
         self.open_on_enter = open_on_enter
+        self.branch_to_switch: str | None = None
 
     def compose(self) -> ComposeResult:
+        yield Static(_context_bar_text(), classes="context-bar")
         yield DataTable(cursor_type="row", zebra_stripes=True)
         yield Input(id="filter-bar", placeholder="Filter…")
         yield Footer()
@@ -1228,6 +1328,19 @@ class PrPickerApp(App):
         if pr is None:
             return
         self.push_screen(DiffModal(pr))
+
+    def action_switch_branch(self) -> None:
+        if isinstance(self.focused, Input):
+            return
+        pr = self._selected_pr()
+        if pr is None:
+            return
+        branch = pr.get("source", {}).get("branch", "")
+        if not branch:
+            self.notify("No source branch found for this PR.", severity="warning")
+            return
+        self.branch_to_switch = branch
+        self.exit()
 
     def action_quit(self) -> None:
         self.exit()
@@ -1434,15 +1547,33 @@ def _get_local_branches() -> list[tuple[str, bool]]:
 
 class BranchPickerApp(App):
     CSS = """
+    Screen { background: #0a0e0a; }
+    .context-bar {
+        height: 1;
+        background: #0d1a0d;
+        color: #00ff41;
+        padding: 0 1;
+        text-style: bold;
+    }
     DataTable {
         height: 1fr;
+        background: #0a0e0a;
     }
+    DataTable > .datatable--header { background: #0d1a0d; color: #00e5ff; text-style: bold; }
+    DataTable > .datatable--cursor { background: #003d00; color: #00ff41; text-style: bold; }
+    DataTable > .datatable--hover  { background: #001a00; }
+    DataTable > .datatable--odd-row  { background: #080c08; color: #b8d4b8; }
+    DataTable > .datatable--even-row { background: #0a0e0a; color: #b8d4b8; }
     #filter-bar {
         dock: bottom;
         display: none;
-        border: tall $accent;
+        border: tall #00ff41;
+        background: #0d1a0d;
+        color: #00ff41;
         margin-bottom: 1;
     }
+    Footer { background: #0d1a0d; color: #4d8a4d; }
+    Footer > .footer--key { background: #152015; color: #00e5ff; }
     """
 
     BINDINGS = [
@@ -1457,6 +1588,7 @@ class BranchPickerApp(App):
         self.selected_branch: str | None = None
 
     def compose(self) -> ComposeResult:
+        yield Static(_context_bar_text(), classes="context-bar")
         yield DataTable(cursor_type="row", zebra_stripes=True)
         yield Input(id="filter-bar", placeholder="Filter…")
         yield Footer()
@@ -1539,18 +1671,20 @@ class CommitModal(ModalScreen):
     CSS = """
     CommitModal {
         align: center middle;
-        background: $background 70%;
+        background: #0a0e0a 85%;
     }
     #dialog {
         width: 64;
         height: auto;
         padding: 1 2;
-        border: thick $accent;
-        background: $surface;
+        border: thick #00ff41;
+        background: #0d1a0d;
     }
-    #title       { text-style: bold; padding-bottom: 1; }
-    #hint        { color: $text-muted; padding-bottom: 1; }
-    #hint-escape { color: $text-muted; padding-bottom: 1; }
+    #title       { text-style: bold; padding-bottom: 1; color: #00ff41; }
+    #hint        { color: #00e5ff; padding-bottom: 1; }
+    #hint-escape { color: #4d8a4d; padding-bottom: 1; }
+    Footer { background: #0d1a0d; color: #4d8a4d; }
+    Footer > .footer--key { background: #152015; color: #00e5ff; }
     """
 
     BINDINGS = [Binding("escape", "cancel", "Stage without commit")]
@@ -1585,16 +1719,19 @@ class CommitModal(ModalScreen):
 
 class DiffModal(ModalScreen):
     CSS = """
-    DiffModal { background: $background 80%; }
-    #diff-scroll { width: 100%; height: 1fr; border: thick $accent; }
+    DiffModal { background: #0a0e0a 92%; }
+    #diff-scroll { width: 100%; height: 1fr; border: thick #00ff41; }
     #diff-content { padding: 0; }
-    #search-bar { display: none; }
+    #search-bar { display: none; background: #0d1a0d; color: #00ff41; border: tall #00ff41; }
     #search-status {
         display: none;
-        background: $warning 70%;
-        color: $text;
+        background: #ffb300;
+        color: #0a0e0a;
         padding: 0 1;
+        text-style: bold;
     }
+    Footer { background: #0d1a0d; color: #4d8a4d; }
+    Footer > .footer--key { background: #152015; color: #00e5ff; }
     """
 
     BINDINGS = [
@@ -1769,17 +1906,17 @@ class DiffModal(ModalScreen):
 
 class FmtModal(ModalScreen):
     CSS = """
-    FmtModal { background: $background 80%; }
+    FmtModal { background: #0a0e0a 85%; }
     #fmt-outer {
         width: 90%;
         height: 80%;
-        border: thick $accent;
-        background: $surface;
+        border: thick #00ff41;
+        background: #0d1a0d;
         padding: 1 2;
     }
-    #fmt-title  { text-style: bold; padding-bottom: 1; }
+    #fmt-title  { text-style: bold; padding-bottom: 1; color: #00ff41; }
     #fmt-scroll { height: 1fr; }
-    #fmt-hint   { color: $text-muted; padding-top: 1; }
+    #fmt-hint   { color: #4d8a4d; padding-top: 1; }
     """
 
     def compose(self) -> ComposeResult:
@@ -1808,28 +1945,98 @@ class FmtModal(ModalScreen):
         event.prevent_default()
 
 
+class BranchDiffModal(ModalScreen):
+    """Full-screen diff of a branch against a base branch."""
+
+    CSS = """
+    BranchDiffModal { background: #0a0e0a 92%; }
+    #bdiff-scroll { width: 100%; height: 1fr; border: thick #00ff41; }
+    #bdiff-content { padding: 0; }
+    Footer { background: #0d1a0d; color: #4d8a4d; }
+    Footer > .footer--key { background: #152015; color: #00e5ff; }
+    """
+
+    BINDINGS = [Binding("escape", "dismiss", "Close")]
+
+    def __init__(self, branch: str, base: str) -> None:
+        super().__init__()
+        self.branch = branch
+        self.base = base
+
+    def compose(self) -> ComposeResult:
+        with ScrollableContainer(id="bdiff-scroll"):
+            yield Static(f"Loading diff {self.base}...{self.branch}…", id="bdiff-content")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.run_worker(self._fetch_diff, thread=True)
+
+    def _fetch_diff(self) -> None:
+        result = subprocess.run(
+            ["git", "diff", f"{self.base}...{self.branch}"],
+            capture_output=True,
+            text=True,
+        )
+        raw = result.stdout or "No differences found."
+        if shutil.which("delta"):
+            proc = subprocess.run(
+                ["delta", "--color-only"],
+                input=raw,
+                capture_output=True,
+                text=True,
+            )
+            from rich.text import Text
+            content = Text.from_ansi(proc.stdout if proc.returncode == 0 else raw)
+        else:
+            from rich.syntax import Syntax
+            content = Syntax(raw, "diff", theme="monokai")
+        self.app.call_from_thread(self._update, content)
+
+    def _update(self, content) -> None:
+        self.query_one("#bdiff-content", Static).update(content)
+
+
 class FilePickerApp(App):
     CSS = """
-    Screen { layout: vertical; }
+    Screen { layout: vertical; background: #0a0e0a; }
 
+    .context-bar {
+        height: 1;
+        background: #0d1a0d;
+        color: #00ff41;
+        padding: 0 1;
+        text-style: bold;
+    }
     .section {
         height: 1fr;
-        border: tall $panel;
+        border: tall #1a3a1a;
     }
     .section:focus-within {
-        border: tall $accent;
+        border: tall #00ff41;
     }
     .section-label {
         padding: 0 1;
-        background: $boost;
-        color: $text-muted;
+        background: #0d1a0d;
+        color: #00e5ff;
         text-style: bold;
     }
-    DataTable { height: 1fr; }
+    DataTable {
+        height: 1fr;
+        background: #0a0e0a;
+    }
+    DataTable > .datatable--header { background: #0d1a0d; color: #00e5ff; text-style: bold; }
+    DataTable > .datatable--cursor { background: #003d00; color: #00ff41; text-style: bold; }
+    DataTable > .datatable--hover  { background: #001a00; }
+    DataTable > .datatable--odd-row  { background: #080c08; color: #b8d4b8; }
+    DataTable > .datatable--even-row { background: #0a0e0a; color: #b8d4b8; }
     .section-filter {
         display: none;
-        border-top: tall $panel;
+        border-top: tall #1a3a1a;
+        background: #0d1a0d;
+        color: #00ff41;
     }
+    Footer { background: #0d1a0d; color: #4d8a4d; }
+    Footer > .footer--key { background: #152015; color: #00e5ff; }
     """
 
     BINDINGS = [
@@ -1912,6 +2119,7 @@ class FilePickerApp(App):
     # --- compose / mount ---
 
     def compose(self) -> ComposeResult:
+        yield Static(_context_bar_text(), classes="context-bar")
         with Vertical(classes="section"):
             yield Label("  Staged  (space to unstage)", classes="section-label")
             yield DataTable(id="staged", cursor_type="row", zebra_stripes=True)
@@ -2108,8 +2316,18 @@ class FilePickerApp(App):
             self._compute_ops()
             self.exit()
             return
-        ticket = get_ticket()
-        self.push_screen(CommitModal(ticket), self._on_commit_modal)
+        if get_config("fmt.on_commit") == "true":
+            self.push_screen(FmtModal(), self._on_fmt_before_commit)
+        else:
+            self.push_screen(CommitModal(get_ticket()), self._on_commit_modal)
+
+    def _on_fmt_before_commit(self, _: None) -> None:
+        self._reload_statuses()
+        if not self._staged_paths:
+            self._compute_ops()
+            self.exit()
+            return
+        self.push_screen(CommitModal(get_ticket()), self._on_commit_modal)
 
     def _on_commit_modal(self, message: str | None) -> None:
         self._compute_ops()
@@ -2570,6 +2788,237 @@ def cmd_reset() -> None:
                 click.echo("Stashed changes restored.")
 
 
+@main.command("sync")
+def cmd_sync() -> None:
+    """Rebase the current branch onto the latest default branch from origin."""
+    current_branch = _get_current_branch()
+    if current_branch is None:
+        raise click.ClickException("Not on a branch (detached HEAD).")
+
+    default_branch = _get_default_branch()
+    if current_branch == default_branch:
+        raise click.ClickException(
+            f"Already on {default_branch}. Use 'jg reset' to pull the latest."
+        )
+
+    click.echo(f"Fetching origin…")
+    fetch = subprocess.run(["git", "fetch", "origin"], capture_output=True, text=True)
+    if fetch.returncode != 0:
+        raise click.ClickException(f"Fetch failed:\n{fetch.stderr.strip()}")
+
+    click.echo(f"Rebasing {current_branch} onto origin/{default_branch}…")
+    rebase = subprocess.run(["git", "rebase", f"origin/{default_branch}"])
+    if rebase.returncode != 0:
+        click.echo(
+            "\nRebase conflict detected. Resolve the conflicts then run:\n"
+            "  git rebase --continue\n"
+            "Or to cancel:\n"
+            "  git rebase --abort",
+            err=True,
+        )
+        raise click.Abort()
+
+    click.echo(f"Done. {current_branch} is up to date with origin/{default_branch}.")
+
+
+class PruneApp(App):
+    CSS = """
+    Screen { background: #0a0e0a; }
+    .context-bar {
+        height: 1;
+        background: #0d1a0d;
+        color: #00ff41;
+        padding: 0 1;
+        text-style: bold;
+    }
+    DataTable {
+        height: 1fr;
+        background: #0a0e0a;
+    }
+    DataTable > .datatable--header { background: #0d1a0d; color: #00e5ff; text-style: bold; }
+    DataTable > .datatable--cursor { background: #003d00; color: #00ff41; text-style: bold; }
+    DataTable > .datatable--hover  { background: #001a00; }
+    DataTable > .datatable--odd-row  { background: #080c08; color: #b8d4b8; }
+    DataTable > .datatable--even-row { background: #0a0e0a; color: #b8d4b8; }
+    Footer { background: #0d1a0d; color: #4d8a4d; }
+    Footer > .footer--key { background: #152015; color: #00e5ff; }
+    """
+
+    BINDINGS = [
+        Binding("escape", "quit", "Quit"),
+        Binding("space", "toggle_select", "Select", show=True),
+        Binding("a", "select_all", "All", show=True),
+        Binding("d", "show_diff", "Diff", show=True),
+        Binding("x", "delete_selected", "Delete", show=True),
+        Binding("s", "switch_branch", "Switch", show=True),
+    ]
+
+    def __init__(self, branches: list[dict]) -> None:
+        super().__init__()
+        self.branches = list(branches)  # [{"name": str, "status": str}]
+        self._selected: set[str] = set()
+        self.deleted: list[str] = []
+        self.branch_to_switch: str | None = None
+
+    def compose(self) -> ComposeResult:
+        yield Static(_context_bar_text(), classes="context-bar")
+        yield DataTable(cursor_type="row", zebra_stripes=True)
+        yield Footer()
+
+    def on_mount(self) -> None:
+        from rich.text import Text
+        table = self.query_one(DataTable)
+        table.add_column("", key="sel", width=3)
+        table.add_column("Branch", key="name")
+        table.add_column("Status", key="status")
+        for b in self.branches:
+            table.add_row(" ", b["name"], self._status_text(b["status"]), key=b["name"])
+        table.focus()
+
+    @staticmethod
+    def _status_text(status: str):
+        from rich.text import Text
+        if status == "remote deleted":
+            t = Text("remote deleted")
+            t.stylize("#ffb300")
+            return t
+        t = Text("never pushed")
+        t.stylize("#00e5ff")
+        return t
+
+    @staticmethod
+    def _sel_marker(selected: bool):
+        from rich.text import Text
+        if selected:
+            t = Text("●")
+            t.stylize("bold #00ff41")
+            return t
+        return " "
+
+    def _cursor_branch(self) -> str | None:
+        table = self.query_one(DataTable)
+        if table.row_count == 0:
+            return None
+        cell_key = table.coordinate_to_cell_key(Coordinate(table.cursor_row, 0))
+        return cell_key.row_key.value
+
+    def action_toggle_select(self) -> None:
+        name = self._cursor_branch()
+        if name is None:
+            return
+        table = self.query_one(DataTable)
+        if name in self._selected:
+            self._selected.discard(name)
+        else:
+            self._selected.add(name)
+        table.update_cell(name, "sel", self._sel_marker(name in self._selected))
+
+    def action_select_all(self) -> None:
+        table = self.query_one(DataTable)
+        all_names = {b["name"] for b in self.branches}
+        if self._selected == all_names:
+            self._selected.clear()
+            for name in all_names:
+                table.update_cell(name, "sel", " ")
+        else:
+            self._selected = all_names.copy()
+            for name in all_names:
+                table.update_cell(name, "sel", self._sel_marker(True))
+
+    def action_delete_selected(self) -> None:
+        if not self._selected:
+            self.notify("No branches selected — press Space to select.", severity="warning")
+            return
+        count = len(self._selected)
+        self.push_screen(
+            ConfirmModal(f"Delete {count} selected branch(es)?"),
+            self._on_confirm_delete,
+        )
+
+    def _on_confirm_delete(self, confirmed: bool) -> None:
+        if not confirmed:
+            return
+        table = self.query_one(DataTable)
+        to_delete = sorted(self._selected)
+        failed = []
+        for name in to_delete:
+            r = subprocess.run(["git", "branch", "-D", name], capture_output=True, text=True)
+            if r.returncode == 0:
+                self.deleted.append(name)
+                table.remove_row(name)
+                self.branches = [b for b in self.branches if b["name"] != name]
+            else:
+                failed.append((name, r.stderr.strip()))
+        self._selected -= set(self.deleted)
+        if failed:
+            for name, err in failed:
+                self.notify(f"Failed: {name}: {err}", severity="error", timeout=6)
+        if table.row_count == 0:
+            self.exit()
+
+    def action_show_diff(self) -> None:
+        name = self._cursor_branch()
+        if name is None:
+            return
+        base = _get_default_branch()
+        self.push_screen(BranchDiffModal(name, base))
+
+    def action_switch_branch(self) -> None:
+        name = self._cursor_branch()
+        if name is None:
+            return
+        self.branch_to_switch = name
+        self.exit()
+
+    def action_quit(self) -> None:
+        self.exit()
+
+
+@main.command("prune")
+def cmd_prune() -> None:
+    """Interactively prune local branches with no remote (deleted upstream or never pushed)."""
+    click.echo("Fetching and pruning remote refs…")
+    fetch = subprocess.run(["git", "fetch", "--prune"], capture_output=True, text=True)
+    if fetch.returncode != 0:
+        raise click.ClickException(f"Fetch failed:\n{fetch.stderr.strip()}")
+
+    result = subprocess.run(["git", "branch", "-vv"], capture_output=True, text=True, check=True)
+
+    current = _get_current_branch()
+    default_branch = _get_default_branch()
+
+    branches: list[dict] = []
+    for line in result.stdout.splitlines():
+        parts = line.lstrip("* ").split()
+        if not parts:
+            continue
+        branch = parts[0]
+        if branch in (current, default_branch):
+            continue
+        if ": gone]" in line:
+            branches.append({"name": branch, "status": "remote deleted"})
+        elif "[origin/" not in line:
+            branches.append({"name": branch, "status": "never pushed"})
+
+    if not branches:
+        click.echo("No prunable local branches found.")
+        return
+
+    app = PruneApp(branches)
+    app.run()
+
+    if app.deleted:
+        click.echo(f"Deleted {len(app.deleted)} branch(es): {', '.join(app.deleted)}")
+
+    if app.branch_to_switch:
+        branch = app.branch_to_switch
+        r = subprocess.run(["git", "switch", branch], capture_output=True, text=True)
+        if r.returncode == 0:
+            click.echo(f"Switched to branch: {branch}")
+        else:
+            raise click.ClickException(f"Failed to switch to '{branch}':\n{r.stderr.strip()}")
+
+
 @main.command("commit", context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
 @click.argument("message")
 @click.argument("git_args", nargs=-1, type=click.UNPROCESSED)
@@ -2796,7 +3245,40 @@ def cmd_prs(ticket: str | None) -> None:
         return
 
     sorted_prs = sorted(prs, key=lambda p: (p.get("status") != "OPEN", p.get("lastUpdate", "")))
-    PrPickerApp(sorted_prs, open_on_enter=True).run()
+    app = PrPickerApp(sorted_prs, open_on_enter=True)
+    app.run()
+
+    if app.branch_to_switch:
+        branch = app.branch_to_switch
+        # Check whether the local branch already exists.
+        local_exists = subprocess.run(
+            ["git", "rev-parse", "--verify", branch],
+            capture_output=True,
+        ).returncode == 0
+
+        if local_exists:
+            result = subprocess.run(["git", "switch", branch], capture_output=True, text=True)
+            if result.returncode == 0:
+                click.echo(f"Switched to branch: {branch}")
+            else:
+                raise click.ClickException(f"Failed to switch to '{branch}':\n{result.stderr.strip()}")
+        else:
+            default = _get_default_branch()
+            click.echo(
+                f"Branch '{branch}' not found locally. Creating from {default}…",
+                err=True,
+            )
+            result = subprocess.run(
+                ["git", "switch", "-c", branch, default],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                click.echo(f"Created and switched to branch: {branch} (from {default})")
+            else:
+                raise click.ClickException(
+                    f"Failed to create branch '{branch}' from {default}:\n{result.stderr.strip()}"
+                )
 
 
 @main.group("config")

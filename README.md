@@ -92,6 +92,7 @@ Config is stored in `~/.config/jira-git-helper/config`. Use `jg config set/get/l
 |---|---|
 | `projects` | Comma-separated project keys to scope the ticket picker, e.g. `SWY` or `SWY,DOPS` |
 | `fields.<PROJECT>` | Comma-separated JIRA field IDs to show as extra columns in `jg set` (see below) |
+| `fmt.on_commit` | Set to `true` to run formatters automatically before the commit prompt in `jg add` |
 
 ### Project scoping
 
@@ -265,6 +266,7 @@ jg set --max 500
 | `Enter` | Select the highlighted ticket (or confirm filter and return to list) |
 | `i` | Open a detail panel for the highlighted ticket (summary, status, assignee, description, etc.) |
 | `o` | Open the highlighted ticket in your browser |
+| `c` | Copy the ticket URL to the clipboard |
 | `d` | Open the field picker — browse all fields on the ticket, space to toggle columns, Enter to save |
 | `f` | Open the filter manager for the current ticket's project |
 | `r` | Refresh — re-query JIRA and reload the list |
@@ -395,6 +397,12 @@ The screen is split into sections: **Staged** (always shown), plus **Modified**,
 
 Type a message and press `Enter` to commit. Press `Escape` to skip the commit and just apply the staged changes — useful when you want to stage files now and commit later with `jg commit`.
 
+If `fmt.on_commit` is set to `true` in config, formatters run automatically before the commit prompt opens:
+
+```sh
+jg config set fmt.on_commit true
+```
+
 > **Note:** If no ticket is set, `jg add` will prompt you to pick one interactively before proceeding.
 >
 > **Note:** If the current branch is not prefixed with the active ticket key, `jg add` will prompt for a branch suffix and create the branch automatically before committing.
@@ -500,6 +508,55 @@ and continue. After a successful pull it then offers to restore the stash.
 
 ---
 
+### `jg sync`
+
+Rebase the current feature branch onto the latest default branch from origin, without leaving your branch.
+
+```sh
+jg sync
+```
+
+Equivalent to `git fetch origin && git rebase origin/main`. The default branch is auto-detected from `origin/HEAD`, falling back to `main`/`master`.
+
+If a conflict occurs, the standard git rebase flow applies — resolve conflicts and run `git rebase --continue`, or `git rebase --abort` to cancel.
+
+> Use `jg reset` when you want to switch *to* the default branch and pull. Use `jg sync` when you want to stay on your feature branch and bring it up to date.
+
+---
+
+### `jg prune`
+
+Interactively prune local branches that have no remote counterpart — either because the remote was deleted (typically after a PR merge) or because the branch was never pushed.
+
+```sh
+jg prune
+```
+
+Runs `git fetch --prune` first to refresh remote-tracking refs, then opens an interactive DataTable listing every prunable local branch. The current branch and default branch are always excluded.
+
+**Status column:**
+
+| Status | Colour | Meaning |
+|---|---|---|
+| `remote deleted` | amber | Had a remote tracking branch that was deleted |
+| `never pushed` | cyan | Local-only branch that was never pushed |
+
+**Controls:**
+
+| Key | Action |
+|---|---|
+| `↑` / `↓` | Navigate branches |
+| `Space` | Toggle selection |
+| `a` | Select / deselect all |
+| `d` | View diff against default branch in a full-screen viewer |
+| `x` | Delete selected branches (confirmation prompt) |
+| `s` | Switch to the highlighted branch and exit |
+| `Escape` | Quit without changes |
+
+Uses `git branch -D` (force delete) so branches merged via squash or rebase are handled correctly alongside standard merges.
+
+---
+
 ### `jg prs [TICKET]`
 
 Browse all GitHub PRs linked to a ticket in an interactive TUI, with inline diff viewing.
@@ -521,6 +578,7 @@ ones first, then by last-updated date. Status is colour-coded: green (open), yel
 | `/` | Open filter bar — searches status, author, repo, branch, and title |
 | `o` | Open the highlighted PR in your browser |
 | `d` | View the PR diff inline |
+| `s` | Switch to the PR's source branch (creates from default branch if not found locally) |
 | `Escape` | Close filter / quit |
 
 **Diff viewer:**
