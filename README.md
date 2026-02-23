@@ -378,9 +378,7 @@ An interactive TUI for staging files and committing — all in one step.
 jg add
 ```
 
-The screen is split into up to three sections (staged, modified, untracked). Use `Space`
-to toggle files between staged/unstaged, then `Enter` to open the commit message
-prompt. The commit message is automatically prefixed with the active ticket key.
+The screen is split into sections: **Staged** (always shown), plus **Modified**, **Deleted**, and **Untracked** sections that appear only when they have files. Use `Space` to toggle files between staged/unstaged, then `Enter` to open the commit message prompt. The commit message is automatically prefixed with the active ticket key.
 
 **Controls:**
 

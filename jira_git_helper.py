@@ -1337,12 +1337,12 @@ def cmd_version() -> None:
     click.echo(f"jg {__version__}")
 
 
-def _get_file_statuses() -> tuple[list[tuple[str, str]], list[tuple[str, str]], list[tuple[str, str]]]:
-    """Return (staged, modified, untracked) as lists of (status_code, filepath)."""
+def _get_file_statuses() -> tuple[list[tuple[str, str]], list[tuple[str, str]], list[tuple[str, str]], list[tuple[str, str]]]:
+    """Return (staged, modified, deleted, untracked) as lists of (status_code, filepath)."""
     result = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
     if result.returncode != 0:
         raise click.ClickException("Not a git repository or git not available.")
-    staged, modified, untracked = [], [], []
+    staged, modified, deleted, untracked = [], [], [], []
     for line in result.stdout.splitlines():
         if len(line) < 4:
             continue
@@ -1354,8 +1354,11 @@ def _get_file_statuses() -> tuple[list[tuple[str, str]], list[tuple[str, str]], 
             if x not in (" ", "?"):
                 staged.append((x, path))
             if y not in (" ", "?"):
-                modified.append((y, path))
-    return staged, modified, untracked
+                if y == "D":
+                    deleted.append(("D", path))
+                else:
+                    modified.append((y, path))
+    return staged, modified, deleted, untracked
 
 
 def _get_current_branch() -> str | None:
@@ -1782,24 +1785,35 @@ class FilePickerApp(App):
         self,
         staged: list[tuple[str, str]],
         modified: list[tuple[str, str]],
+        deleted: list[tuple[str, str]],
         untracked: list[tuple[str, str]],
     ) -> None:
         super().__init__()
-        self.orig_staged = list(staged)
-        self.orig_modified = list(modified)
-        self.orig_untracked = list(untracked)
+        # Store originals as (status, path, item_key) triples.
+        # item_key = "origin:path" — unique even when the same path appears in multiple sections.
+        self.orig_staged   = [(s, p, f"staged:{p}")    for s, p in staged]
+        self.orig_modified = [(s, p, f"modified:{p}")  for s, p in modified]
+        self.orig_deleted  = [(s, p, f"deleted:{p}")   for s, p in deleted]
+        self.orig_untracked= [(s, p, f"untracked:{p}") for s, p in untracked]
 
-        # Build lookup: path -> (status, origin)
+        # Build lookup: item_key -> (status, origin)
         self.file_info: dict[str, tuple[str, str]] = {}
-        for status, path in staged:
-            self.file_info[path] = (status, "staged")
-        for status, path in modified:
-            self.file_info[path] = (status, "modified")
-        for status, path in untracked:
-            self.file_info[path] = (status, "untracked")
+        for status, path, ik in self.orig_staged:
+            self.file_info[ik] = (status, "staged")
+        for status, path, ik in self.orig_modified:
+            self.file_info[ik] = (status, "modified")
+        for status, path, ik in self.orig_deleted:
+            self.file_info[ik] = (status, "deleted")
+        for status, path, ik in self.orig_untracked:
+            self.file_info[ik] = (status, "untracked")
 
-        # Ordered list of paths currently in the staged section
-        self._staged_paths: list[str] = [p for _, p in staged]
+        # Ordered list of item_keys currently in the staged section
+        self._staged_paths: list[str] = [ik for _, _, ik in self.orig_staged]
+
+        # Determine which optional sections to show
+        self._show_modified  = bool(self.orig_modified)  or any(s not in ("A", "?", "D") for s, _, _ in self.orig_staged)
+        self._show_deleted   = bool(self.orig_deleted)   or any(s == "D"               for s, _, _ in self.orig_staged)
+        self._show_untracked = bool(self.orig_untracked) or any(s in ("A", "?")        for s, _, _ in self.orig_staged)
 
         # Output
         self.to_stage: set[str] = set()
@@ -1810,37 +1824,36 @@ class FilePickerApp(App):
 
     # --- data helpers ---
 
-    def _files_for_section(self, section_id: str) -> list[tuple[str, str]]:
-        """Return (status, path) pairs for a section given current staged state."""
+    def _files_for_section(self, section_id: str) -> list[tuple[str, str, str]]:
+        """Return (status, path, item_key) triples for a section given current staged state."""
         staged_set = set(self._staged_paths)
         if section_id == "staged":
             return sorted(
-                [(self.file_info[p][0], p) for p in self._staged_paths],
+                [(self.file_info[ik][0], ik.split(":", 1)[1], ik) for ik in self._staged_paths],
                 key=lambda x: x[1],
             )
         if section_id == "modified":
-            # Unstaged-modified files + any originally-staged non-added files moved out
-            files = [(s, p) for s, p in self.orig_modified if p not in staged_set]
-            files += [
-                (s, p) for s, p in self.orig_staged
-                if p not in staged_set and s != "A"
-            ]
+            files = [(s, p, ik) for s, p, ik in self.orig_modified if ik not in staged_set]
+            # orig-staged items that were unstaged back — non-A/? and non-D go to modified
+            files += [(s, p, ik) for s, p, ik in self.orig_staged if ik not in staged_set and s not in ("A", "?", "D")]
+            return sorted(files, key=lambda x: x[1])
+        if section_id == "deleted":
+            files = [(s, p, ik) for s, p, ik in self.orig_deleted if ik not in staged_set]
+            # orig-staged D items that were unstaged — deletion is no longer staged, shows as working-tree delete
+            files += [(s, p, ik) for s, p, ik in self.orig_staged if ik not in staged_set and s == "D"]
             return sorted(files, key=lambda x: x[1])
         if section_id == "untracked":
-            # Unstaged-untracked files + any originally-staged added files moved out
-            files = [(s, p) for s, p in self.orig_untracked if p not in staged_set]
-            files += [
-                (s, p) for s, p in self.orig_staged
-                if p not in staged_set and s == "A"
-            ]
+            files = [(s, p, ik) for s, p, ik in self.orig_untracked if ik not in staged_set]
+            # orig-staged A/? items that were unstaged go back to untracked
+            files += [(s, p, ik) for s, p, ik in self.orig_staged if ik not in staged_set and s in ("A", "?")]
             return sorted(files, key=lambda x: x[1])
         return []
 
     def _compute_ops(self) -> None:
-        orig_staged_paths = {p for _, p in self.orig_staged}
+        orig_staged_keys = {ik for _, _, ik in self.orig_staged}
         current_staged = set(self._staged_paths)
-        self.to_stage = current_staged - orig_staged_paths
-        self.to_unstage = orig_staged_paths - current_staged
+        self.to_stage   = {ik.split(":", 1)[1] for ik in current_staged - orig_staged_keys}
+        self.to_unstage = {ik.split(":", 1)[1] for ik in orig_staged_keys - current_staged}
 
     # --- compose / mount ---
 
@@ -1849,23 +1862,37 @@ class FilePickerApp(App):
             yield Label("  Staged  (space to unstage)", classes="section-label")
             yield DataTable(id="staged", cursor_type="row", zebra_stripes=True)
             yield Input(id="filter-staged", placeholder="Filter…", classes="section-filter")
-        with Vertical(classes="section"):
-            yield Label("  Modified  (space to stage)", classes="section-label")
-            yield DataTable(id="modified", cursor_type="row", zebra_stripes=True)
-            yield Input(id="filter-modified", placeholder="Filter…", classes="section-filter")
-        with Vertical(classes="section"):
-            yield Label("  Untracked  (space to stage)", classes="section-label")
-            yield DataTable(id="untracked", cursor_type="row", zebra_stripes=True)
-            yield Input(id="filter-untracked", placeholder="Filter…", classes="section-filter")
+        if self._show_modified:
+            with Vertical(classes="section"):
+                yield Label("  Modified  (space to stage)", classes="section-label")
+                yield DataTable(id="modified", cursor_type="row", zebra_stripes=True)
+                yield Input(id="filter-modified", placeholder="Filter…", classes="section-filter")
+        if self._show_deleted:
+            with Vertical(classes="section"):
+                yield Label("  Deleted  (space to stage)", classes="section-label")
+                yield DataTable(id="deleted", cursor_type="row", zebra_stripes=True)
+                yield Input(id="filter-deleted", placeholder="Filter…", classes="section-filter")
+        if self._show_untracked:
+            with Vertical(classes="section"):
+                yield Label("  Untracked  (space to stage)", classes="section-label")
+                yield DataTable(id="untracked", cursor_type="row", zebra_stripes=True)
+                yield Input(id="filter-untracked", placeholder="Filter…", classes="section-filter")
         yield Footer()
 
     def on_mount(self) -> None:
         self._init_table("staged")
-        self._init_table("modified")
-        self._init_table("untracked")
+        if self._show_modified:
+            self._init_table("modified")
+        if self._show_deleted:
+            self._init_table("deleted")
+        if self._show_untracked:
+            self._init_table("untracked")
         # Focus the first non-empty non-staged table; fall back to staged.
-        for tid in ("modified", "untracked", "staged"):
-            t = self.query_one(f"#{tid}", DataTable)
+        for tid in ("modified", "deleted", "untracked", "staged"):
+            try:
+                t = self.query_one(f"#{tid}", DataTable)
+            except Exception:
+                continue
             if t.row_count > 0:
                 t.focus()
                 return
@@ -1877,28 +1904,27 @@ class FilePickerApp(App):
             return
         table.add_column("STATUS", width=12)
         table.add_column("FILE")
-        for status, path in self._files_for_section(table_id):
-            self._add_row(table, status, path, table_id)
+        for status, path, item_key in self._files_for_section(table_id):
+            self._add_row(table, status, path, item_key, table_id)
 
-    def _add_row(self, table: DataTable, status: str, path: str, section_id: str) -> None:
+    def _add_row(self, table: DataTable, status: str, path: str, item_key: str, section_id: str) -> None:
         from rich.text import Text as RichText
 
-        # Classify by file type.
-        # "A" = added to index (was previously untracked), treated the same as "?"
         is_untracked_type = status in ("A", "?")
 
-        # Label
-        label = "untracked" if is_untracked_type else FILE_STATUS_LABELS.get(status, status)
+        label = FILE_STATUS_LABELS.get(status, status)
 
         # Status label: green in staged section, type colour everywhere else
         if section_id == "staged":
             status_style = "bold green"
         elif is_untracked_type:
             status_style = "bold red"
+        elif status == "D":
+            status_style = "bold red"
         else:
             status_style = "bold dark_orange"
 
-        # Filename colour is always based on file type and persists across sections
+        # Filename colour
         if is_untracked_type:
             path_style = "red"
         elif status in ("M", "D", "R", "C"):
@@ -1910,7 +1936,7 @@ class FilePickerApp(App):
             RichText.from_markup(f"[{path_style}]{path}[/{path_style}]")
             if path_style else RichText(path)
         )
-        table.add_row(RichText(label, style=status_style), path_cell, key=path)
+        table.add_row(RichText(label, style=status_style), path_cell, key=item_key)
 
     # --- refresh ---
 
@@ -1921,17 +1947,16 @@ class FilePickerApp(App):
             return
         all_files = self._files_for_section(table_id)
         filt = self._section_filters.get(table_id, "").lower()
-        files = [(s, p) for s, p in all_files if filt in p.lower()] if filt else all_files
+        files = [(s, p, ik) for s, p, ik in all_files if filt in p.lower()] if filt else all_files
         cursor = table.cursor_row
         table.clear()
-        for status, path in files:
-            self._add_row(table, status, path, table_id)
+        for status, path, item_key in files:
+            self._add_row(table, status, path, item_key, table_id)
         table.move_cursor(row=min(cursor, max(0, table.row_count - 1)))
 
     def _refresh_all(self) -> None:
-        self._refresh_table("staged")
-        self._refresh_table("modified")
-        self._refresh_table("untracked")
+        for tid in ("staged", "modified", "deleted", "untracked"):
+            self._refresh_table(tid)
 
     # --- helpers ---
 
@@ -2010,14 +2035,14 @@ class FilePickerApp(App):
         if table is None or table.row_count == 0:
             return
         cell_key = table.coordinate_to_cell_key(Coordinate(table.cursor_row, 0))
-        path = cell_key.row_key.value
+        item_key = cell_key.row_key.value
         cursor = table.cursor_row
 
         if table.id == "staged":
-            self._staged_paths.remove(path)
+            self._staged_paths.remove(item_key)
         else:
-            if path not in self._staged_paths:
-                self._staged_paths.append(path)
+            if item_key not in self._staged_paths:
+                self._staged_paths.append(item_key)
 
         self._refresh_all()
         # Keep cursor near same position in the table the user was in
@@ -2113,13 +2138,13 @@ def cmd_branch(name: str | None, show_all: bool) -> None:
 def cmd_add() -> None:
     """Interactively stage and unstage files."""
     ticket = ensure_ticket()
-    staged, modified, untracked = _get_file_statuses()
+    staged, modified, deleted, untracked = _get_file_statuses()
 
-    if not staged and not modified and not untracked:
+    if not staged and not modified and not deleted and not untracked:
         click.echo("Nothing to do — working tree clean.")
         return
 
-    app = FilePickerApp(staged, modified, untracked)
+    app = FilePickerApp(staged, modified, deleted, untracked)
     app.run()
 
     if app.aborted:

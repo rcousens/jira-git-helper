@@ -1,6 +1,6 @@
 [project]
 name = "jira-git-helper"
-version = "0.10.0"
+version = "0.11.0"
 description = "JIRA ticket context manager for git workflows"
 readme = "README.md"
 requires-python = ">=3.10"

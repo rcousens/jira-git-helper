@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.11.0
+
+### `jg add` — improvements and bug fixes
+
+- **Deleted files section**: working-tree deletions (files removed from disk but not yet staged) now appear in a dedicated **Deleted** section. Press `Space` to stage the deletion, just like modified or untracked files.
+- **Conditional sections**: the Modified, Deleted, and Untracked sections are only shown when they have files. The Staged section is always visible.
+- **Key collision fix**: when the same path appeared as both a staged deletion and an untracked file (e.g. after deleting and recreating a file), the two entries now show independently — once in Staged and once in Untracked — and both can be staged. Previously the untracked entry would silently overwrite the staged deletion in the internal lookup, causing incorrect behaviour.
+
+---
+
 ## v0.10.0
 
 ### `jg set` — ticket picker enhancements
