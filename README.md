@@ -380,7 +380,7 @@ jg add
 
 The screen is split into sections: **Staged** (always shown), plus **Modified**, **Deleted**, and **Untracked** sections that appear only when they have files. Use `Space` to toggle files between staged/unstaged, then `Enter` to open the commit message prompt. The commit message is automatically prefixed with the active ticket key.
 
-**Controls:**
+**File picker controls:**
 
 | Key | Action |
 |---|---|
@@ -389,6 +389,10 @@ The screen is split into sections: **Staged** (always shown), plus **Modified**,
 | `/` | Open filter bar for the focused section |
 | `Enter` | Open commit message prompt (or confirm filter and return to list) |
 | `Escape` | Close filter / cancel |
+
+**Commit message prompt:**
+
+Type a message and press `Enter` to commit. Press `Escape` to skip the commit and just apply the staged changes — useful when you want to stage files now and commit later with `jg commit`.
 
 > **Note:** If no ticket is set, `jg add` will prompt you to pick one interactively before proceeding.
 >

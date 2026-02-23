@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.12.0
+
+### `jg add` — commit prompt clarification
+
+- Pressing `Escape` on the commit message prompt now stages the selected files without committing, then exits to the shell. This was already the behaviour; it is now clearly communicated via a hint label in the prompt and a renamed footer binding ("Stage without commit").
+
+---
+
 ## v0.11.0
 
 ### `jg add` — improvements and bug fixes

@@ -1533,11 +1533,12 @@ class CommitModal(ModalScreen):
         border: thick $accent;
         background: $surface;
     }
-    #title { text-style: bold; padding-bottom: 1; }
-    #hint  { color: $text-muted; padding-bottom: 1; }
+    #title       { text-style: bold; padding-bottom: 1; }
+    #hint        { color: $text-muted; padding-bottom: 1; }
+    #hint-escape { color: $text-muted; padding-bottom: 1; }
     """
 
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+    BINDINGS = [Binding("escape", "cancel", "Stage without commit")]
 
     def __init__(self, ticket: str | None) -> None:
         super().__init__()
@@ -1551,6 +1552,7 @@ class CommitModal(ModalScreen):
                     f"Will commit as: [bold cyan]{self.ticket}[/bold cyan] <message>",
                     id="hint",
                 )
+            yield Label("Escape to stage files without committing", id="hint-escape")
             yield Input(placeholder="Enter commit message…")
             yield Footer()
 
