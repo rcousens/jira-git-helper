@@ -264,6 +264,7 @@ jg set --max 500
 | `↑` / `↓` | Move between tickets |
 | `/` | Open filter bar — type to narrow by key, summary, assignee, status, or any custom column |
 | `Enter` | Select the highlighted ticket (or confirm filter and return to list) |
+| `t` | Toggle between flat table view and hierarchical tree view (epics → tasks → subtasks) |
 | `i` | Open a detail panel for the highlighted ticket (summary, status, assignee, description, etc.) |
 | `o` | Open the highlighted ticket in your browser |
 | `c` | Copy the ticket URL to the clipboard |
@@ -271,6 +272,10 @@ jg set --max 500
 | `f` | Open the filter manager for the current ticket's project |
 | `r` | Refresh — re-query JIRA and reload the list |
 | `Escape` | Close filter / cancel |
+
+**Tree view (`t`):**
+
+Press `t` to switch to a hierarchical view that groups tickets by epic → task → subtask. Selecting a ticket in tree view sets it as the active ticket, same as the flat table. The filter bar works in tree view too — non-matching branches are hidden, and parent nodes with matching descendants are shown dimmed.
 
 **Filter manager (`f`):**
 
@@ -317,6 +322,18 @@ jg info SWY-5678   # look up any ticket by key
 
 ---
 
+### `jg debug <ticket>`
+
+Dump every raw JIRA field for a ticket, formatted as syntax-highlighted JSON. Only non-null fields are shown.
+
+```sh
+jg debug SWY-1234
+```
+
+Useful for discovering custom field IDs, inspecting the API shape of a specific ticket type, or diagnosing issues with the tree view hierarchy.
+
+---
+
 ### `jg open [TICKET]`
 
 Open a ticket in your browser.
@@ -332,8 +349,7 @@ jg open SWY-5678   # open any ticket by key
 
 Work with git branches scoped to the active ticket.
 
-**With no arguments** — opens an interactive branch picker showing all local branches
-that match the active ticket key. Selecting one switches to it.
+**With no arguments** — if on `main`/`master`, shows a full-screen branch prompt displaying the active ticket's info and a suffix input. After the branch is created, falls through to the interactive branch picker showing all local branches for the ticket (including the new one). If already on a feature branch, opens the branch picker directly.
 
 ```sh
 jg branch
@@ -379,6 +395,8 @@ An interactive TUI for staging files and committing — all in one step.
 ```sh
 jg add
 ```
+
+If run on `main`/`master`, a branch prompt screen appears first — it shows the active ticket's info and a suffix input. After the branch is created you are switched to it and the staging screen opens.
 
 The screen is split into sections: **Staged** (always shown), plus **Modified**, **Deleted**, and **Untracked** sections that appear only when they have files. Use `Space` to toggle files between staged/unstaged, then `Enter` to open the commit message prompt. The commit message is automatically prefixed with the active ticket key.
 

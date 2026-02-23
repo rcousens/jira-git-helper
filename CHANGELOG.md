@@ -1,5 +1,73 @@
 # Changelog
 
+## v0.19.0
+
+### Branch prompt on main/master
+
+A new `BranchPromptApp` TUI screen is shown whenever `jg branch` or `jg add` is run while on `main` or `master`. It displays the active ticket's full info (summary, status, priority, assignee, description) and a branch suffix input at the bottom — the same ticket info shown by `jg info`, loaded asynchronously while you type.
+
+- **`jg branch`** (no arguments): if on main/master, shows the branch prompt TUI. On confirm, creates `TICKET-<suffix>` from the default branch, switches to it, then falls through to the interactive branch picker showing all local branches for the ticket (including the newly created one).
+- **`jg add`**: if on main/master, shows the branch prompt TUI before the file picker. On confirm, creates the branch and switches to it, then continues to the staging screen on the new branch.
+- **Escape** in the branch prompt cancels entirely.
+
+### Consistent colour scheme across all TUI screens
+
+All interactive DataTable and tree views now share the same colour palette:
+
+| Field type | Colour |
+|---|---|
+| Key / identifier / branch name | cyan `#00e5ff` |
+| Summary / title / description | pale-green `#b8d4b8` |
+| Status / category | amber `#ffb300` |
+| Person (assignee / author) | purple `#b39ddb` |
+| Staged / active / selected | matrix green `#00ff41` |
+| Modified files | amber `#ffb300` |
+| Deleted / untracked files | red `#ff5555` |
+
+**`jg prs`**: Author → purple, Repo → amber, Source branch → cyan, Title → pale-green.
+
+**`jg branch`**: current branch marker and name → bold cyan; other branches → pale-green.
+
+**`jg prune`**: branch name column → cyan.
+
+**`jg add`**: staged status labels → matrix green; modified labels and paths → amber; untracked and deleted labels and paths → red.
+
+### Filter bar colour consistency
+
+The per-section filter inputs in `jg add` now use the same bright green border (`#00ff41`) as filter bars in all other screens. Previously they used a dim dark-green border.
+
+### Filter bar layout fix (all screens)
+
+The filter bars in `jg prs` and `jg branch` had a `dock: bottom` + `margin-bottom: 1` workaround that caused a one-line layout gap. They now match `jg set`'s approach — no dock, sitting in the normal vertical flow above the footer.
+
+---
+
+## v0.18.0
+
+### `jg set` — tree view fixes and visual improvements
+
+- **Hierarchy fixed**: parent–child relationships now render correctly. The `parent` and `issuetype` fields are now explicitly requested from JIRA, enabling `_build_issue_tree` to resolve epic → task → subtask relationships (previously every issue appeared as a root node).
+- **Wider summaries**: node labels now show up to 80 characters of the ticket summary (was 55).
+- **Colour scheme**: tree node labels now use the full colour palette — **cyan** key · pale-green summary · **amber** `[status]` · **purple** assignee. Previously a blanket `.tree--label` CSS rule was overriding all inline colours with a flat dark green.
+
+### `jg set` — data table colour scheme
+
+- The flat DataTable now uses the same colour palette as the tree view: **cyan** key, **amber** status, **purple** assignee, pale-green summary — replacing the previous uniform pale-green across all columns.
+
+### `jg set` — filter bar layout fix
+
+- The filter bar (activated with `/`) was cut off by one line in both table and tree view. Removed the conflicting `dock: bottom` declaration so the filter bar appears correctly in the layout above the footer.
+
+### New command: `jg debug <ticket>`
+
+- Dumps every non-null raw JIRA field returned by the API for a ticket, formatted as syntax-highlighted JSON. Useful for inspecting API shape, discovering custom field IDs, and diagnosing tree hierarchy issues.
+
+  ```sh
+  jg debug SWY-1234
+  ```
+
+---
+
 ## v0.17.0
 
 ### Removed: `jg diff`

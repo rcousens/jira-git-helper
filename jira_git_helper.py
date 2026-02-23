@@ -24,7 +24,7 @@ from textual.binding import Binding
 from textual.coordinate import Coordinate
 from textual.containers import Vertical, ScrollableContainer
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, Footer, Input, Label, Static
+from textual.widgets import DataTable, Footer, Input, Label, Static, Tree
 
 # --- paths ---
 
@@ -297,7 +297,7 @@ def fetch_issues_for_projects(
     - Multiple projects, any with an active filter: run one query per project
       and merge/deduplicate in Python
     """
-    fields = ["summary", "status", "assignee", "priority"] + (extra_fields or [])
+    fields = ["summary", "status", "assignee", "priority", "parent", "issuetype"] + (extra_fields or [])
 
     if not projects:
         return list(jira.search_issues(_FALLBACK_JQL, maxResults=max_results, fields=fields))
@@ -366,8 +366,20 @@ class JiraListApp(App):
     DataTable > .datatable--hover { background: #001a00; }
     DataTable > .datatable--odd-row  { background: #080c08; color: #b8d4b8; }
     DataTable > .datatable--even-row { background: #0a0e0a; color: #b8d4b8; }
+    Tree {
+        height: 1fr;
+        background: #0a0e0a;
+        display: none;
+        padding: 0 1;
+        color: #b8d4b8;
+    }
+    Tree > .tree--cursor {
+        background: #003d00;
+        text-style: bold;
+    }
+    Tree > .tree--guides       { color: #1a3a1a; }
+    Tree > .tree--guides-hover { color: #2a5a2a; }
     #filter-bar {
-        dock: bottom;
         display: none;
         border: tall #00ff41;
         background: #0d1a0d;
@@ -393,6 +405,7 @@ class JiraListApp(App):
         Binding("d", "show_fields", "Fields", show=True),
         Binding("f", "show_filters", "Filters", show=True),
         Binding("r", "refresh", "Refresh", show=True),
+        Binding("t", "toggle_tree", "Tree", show=True),
         Binding("slash", "activate_filter", "Filter", show=True),
     ]
 
@@ -413,10 +426,12 @@ class JiraListApp(App):
         self.field_names: dict[str, str] = field_names or {}
         self.reload_needed: bool = False
         self.projects: list[str] = projects or []
+        self._tree_mode: bool = False
 
     def compose(self) -> ComposeResult:
         yield Static(_context_bar_text(), classes="context-bar")
         yield DataTable(cursor_type="row", zebra_stripes=True)
+        yield Tree("Issues", id="issue-tree")
         yield Static("", id="filter-status")
         yield Input(id="filter-bar", placeholder="Filter…")
         yield Footer()
@@ -447,6 +462,7 @@ class JiraListApp(App):
         return str(val)
 
     def _populate_table(self, issues: list) -> None:
+        from rich.text import Text
         table = self.query_one(DataTable)
         table.clear()
         self.visible_keys = []
@@ -456,26 +472,132 @@ class JiraListApp(App):
                 if issue.fields.assignee
                 else "Unassigned"
             )
-            row = [issue.key, issue.fields.status.name, assignee]
+            row = [
+                Text(issue.key, style="bold #00e5ff"),
+                Text(issue.fields.status.name, style="#ffb300"),
+                Text(assignee, style="#b39ddb"),
+            ]
             for fid in self.extra_field_ids:
-                row.append(self._field_str(issue, fid))
-            row.append(issue.fields.summary)
+                row.append(Text(self._field_str(issue, fid), style="#b8d4b8"))
+            row.append(Text(issue.fields.summary, style="#b8d4b8"))
             table.add_row(*row, key=issue.key)
             self.visible_keys.append(issue.key)
 
+    # --- tree helpers ---
+
+    def _build_issue_tree(self) -> tuple[list, dict]:
+        """Group all_issues into (roots, children_dict) using fields.parent (next-gen only)."""
+        by_key = {i.key: i for i in self.all_issues}
+        children: dict[str, list] = {}
+        roots = []
+        for issue in self.all_issues:
+            parent = getattr(issue.fields, "parent", None)
+            parent_key = parent.key if parent else None
+            if parent_key and parent_key in by_key:
+                children.setdefault(parent_key, []).append(issue)
+            else:
+                roots.append(issue)
+        return roots, children
+
+    def _issue_matches_filter(self, issue, query: str) -> bool:
+        q = query.lower()
+        return (
+            q in issue.key.lower()
+            or q in issue.fields.summary.lower()
+            or q in (issue.fields.assignee.displayName.lower() if issue.fields.assignee else "")
+            or q in issue.fields.status.name.lower()
+            or any(q in self._field_str(issue, fid).lower() for fid in self.extra_field_ids)
+        )
+
+    def _branch_matches(self, issue, children: dict, query: str) -> bool:
+        if not query:
+            return True
+        if self._issue_matches_filter(issue, query):
+            return True
+        return any(self._branch_matches(c, children, query) for c in children.get(issue.key, []))
+
+    def _tree_node_label(self, issue, dim: bool = False):
+        from rich.text import Text
+        assignee = issue.fields.assignee.displayName if issue.fields.assignee else "Unassigned"
+        status = issue.fields.status.name
+        summary = (issue.fields.summary or "")[:80]
+        t = Text()
+        t.append(issue.key, style="#4d8a4d" if dim else "bold #00e5ff")
+        t.append("  ")
+        t.append(summary, style="#4d8a4d" if dim else "#b8d4b8")
+        t.append("  ")
+        t.append(f"[{status}]", style="#665500" if dim else "#ffb300")
+        t.append("  ")
+        t.append(assignee, style="#3a3060" if dim else "#b39ddb")
+        return t
+
+    def _populate_tree(self, query: str = "") -> None:
+        from rich.text import Text
+        tree = self.query_one(Tree)
+        tree.clear()
+        # Relabel root to dim header
+        tree.root.label = Text("issues", style="#1a3a1a")
+        roots, children = self._build_issue_tree()
+        for issue in roots:
+            if self._branch_matches(issue, children, query):
+                self._add_tree_node(tree.root, issue, children, query)
+        tree.root.expand()
+
+    def _add_tree_node(self, parent_node, issue, children: dict, query: str) -> None:
+        matches_directly = not query or self._issue_matches_filter(issue, query)
+        label = self._tree_node_label(issue, dim=not matches_directly)
+        visible_children = [
+            c for c in children.get(issue.key, [])
+            if self._branch_matches(c, children, query)
+        ]
+        if visible_children:
+            node = parent_node.add(label, data=issue, expand=True)
+            for child in visible_children:
+                self._add_tree_node(node, child, children, query)
+        else:
+            parent_node.add_leaf(label, data=issue)
+
+    def action_toggle_tree(self) -> None:
+        self._tree_mode = not self._tree_mode
+        table = self.query_one(DataTable)
+        tree = self.query_one(Tree)
+        query = self.query_one("#filter-bar", Input).value
+        if self._tree_mode:
+            table.display = False
+            tree.display = True
+            self._populate_tree(query)
+            tree.focus()
+        else:
+            tree.display = False
+            table.display = True
+            table.focus()
+
+    def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
+        if event.node.data:
+            self.selected_ticket = event.node.data.key
+            self.exit()
+
+    # --- end tree helpers ---
+
+    def _active_key(self) -> str | None:
+        """Return the key of the currently highlighted issue in whichever mode is active."""
+        if self._tree_mode:
+            tree = self.query_one(Tree)
+            node = tree.cursor_node
+            if node and node.data:
+                return node.data.key
+            return None
+        return self._cursor_key()
+
     def on_input_changed(self, event: Input.Changed) -> None:
-        search = event.value.lower()
-        if not search:
+        query = event.value.lower()
+        if self._tree_mode:
+            self._populate_tree(query)
+            return
+        if not query:
             self._populate_table(self.all_issues)
             return
-        filtered = [
-            i for i in self.all_issues
-            if search in i.key.lower()
-            or search in i.fields.summary.lower()
-            or search in (i.fields.assignee.displayName.lower() if i.fields.assignee else "")
-            or search in i.fields.status.name.lower()
-            or any(search in self._field_str(i, fid).lower() for fid in self.extra_field_ids)
-        ]
+        filtered = [i for i in self.all_issues if self._issue_matches_filter(i, query)]
         self._populate_table(filtered)
 
     def on_key(self, event) -> None:
@@ -484,20 +606,36 @@ class JiraListApp(App):
             return
 
         focused = self.focused
+        filter_bar = self.query_one("#filter-bar", Input)
+
         if isinstance(focused, Input):
             if event.key == "escape":
                 focused.value = ""
                 focused.display = False
-                self._populate_table(self.all_issues)
-                self.query_one(DataTable).focus()
+                if self._tree_mode:
+                    self._populate_tree()
+                    self.query_one(Tree).focus()
+                else:
+                    self._populate_table(self.all_issues)
+                    self.query_one(DataTable).focus()
                 event.prevent_default()
                 return
             if event.key == "enter":
-                self.query_one(DataTable).focus()
+                (self.query_one(Tree) if self._tree_mode else self.query_one(DataTable)).focus()
                 event.prevent_default()
                 return
 
-        filter_bar = self.query_one("#filter-bar", Input)
+        if self._tree_mode:
+            # Tree handles its own up/down/enter navigation natively.
+            # Only intercept escape to close the filter bar.
+            if event.key == "escape" and filter_bar.display:
+                filter_bar.value = ""
+                filter_bar.display = False
+                self._populate_tree()
+                event.prevent_default()
+            return
+
+        # Table mode
         table = self.query_one(DataTable)
         if event.key == "down":
             table.move_cursor(row=table.cursor_row + 1)
@@ -528,7 +666,7 @@ class JiraListApp(App):
     def action_select_ticket(self) -> None:
         if isinstance(self.focused, Input):
             return
-        key = self._cursor_key()
+        key = self._active_key()
         if key:
             self.selected_ticket = key
             self.exit()
@@ -536,7 +674,7 @@ class JiraListApp(App):
     def action_open_ticket(self) -> None:
         if isinstance(self.focused, Input):
             return
-        key = self._cursor_key()
+        key = self._active_key()
         if key:
             server = get_jira_server()
             webbrowser.open(f"{server}/browse/{key}")
@@ -544,7 +682,7 @@ class JiraListApp(App):
     def action_copy_url(self) -> None:
         if isinstance(self.focused, Input):
             return
-        key = self._cursor_key()
+        key = self._active_key()
         if not key:
             return
         url = f"{get_jira_server()}/browse/{key}"
@@ -556,7 +694,7 @@ class JiraListApp(App):
     def action_show_fields(self) -> None:
         if isinstance(self.focused, Input) or self.jira_client is None:
             return
-        key = self._cursor_key()
+        key = self._active_key()
         if key:
             self.run_worker(lambda: self._fetch_fields_worker(key), thread=True)
 
@@ -603,7 +741,7 @@ class JiraListApp(App):
     def action_show_filters(self) -> None:
         if isinstance(self.focused, Input) or not self.projects:
             return
-        key = self._cursor_key()
+        key = self._active_key()
         project = key.split("-")[0] if key else self.projects[0]
         self.push_screen(FilterListModal(project), self._on_filters_closed)
 
@@ -616,7 +754,7 @@ class JiraListApp(App):
     def action_show_info(self) -> None:
         if isinstance(self.focused, Input) or self.jira_client is None:
             return
-        key = self._cursor_key()
+        key = self._active_key()
         if key:
             self.push_screen(TicketInfoModal(key, self.jira_client))
 
@@ -1138,6 +1276,135 @@ class TicketInfoModal(ModalScreen):
         self.query_one("#ti-content", Static).update(content)
 
 
+class BranchPromptApp(App):
+    """Standalone TUI: shows ticket info and prompts for a new branch suffix.
+
+    After app.run(), inspect app.branch_suffix — non-None means the user confirmed.
+    The caller is responsible for creating the branch.
+    """
+
+    CSS = """
+    Screen { background: #0a0e0a; }
+    #bp-title {
+        height: 1;
+        padding: 0 1;
+        background: #152015;
+        color: #00ff41;
+        text-style: bold;
+    }
+    #bp-scroll { height: 1fr; }
+    #bp-content { padding: 1 2; color: #b8d4b8; }
+    #bp-prompt-label {
+        height: 1;
+        padding: 0 1;
+        color: #ffb300;
+    }
+    #bp-input {
+        border: tall #00ff41;
+        background: #0a0e0a;
+        color: #00ff41;
+    }
+    Footer { background: #0d1a0d; color: #4d8a4d; }
+    Footer > .footer--key { background: #152015; color: #00e5ff; }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("enter", "submit", "Create branch", show=True),
+    ]
+
+    def __init__(self, ticket: str, jira_client) -> None:
+        super().__init__()
+        self._ticket = ticket
+        self._jira_client = jira_client
+        self.branch_suffix: str | None = None
+
+    def compose(self) -> ComposeResult:
+        yield Static(f"  {self._ticket}  —  create a branch to continue", id="bp-title")
+        with ScrollableContainer(id="bp-scroll"):
+            yield Static("Loading…", id="bp-content")
+        yield Label(f"  Branch suffix  (→ {self._ticket}-<suffix>)", id="bp-prompt-label")
+        yield Input(placeholder="e.g. fix-login", id="bp-input")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.query_one("#bp-input", Input).focus()
+        self.run_worker(self._fetch_info, thread=True)
+
+    def _fetch_info(self) -> None:
+        from rich.console import Group
+        from rich.rule import Rule
+        from rich.table import Table
+        from rich.text import Text
+
+        try:
+            issue = self._jira_client.issue(
+                self._ticket,
+                fields=["summary", "status", "assignee", "reporter", "priority", "labels", "description", "issuetype"],
+            )
+        except Exception as e:
+            self.call_from_thread(self._update_content, f"[red]Error loading ticket info: {e}[/red]")
+            return
+
+        f = issue.fields
+        assignee    = f.assignee.displayName if f.assignee else "Unassigned"
+        reporter    = f.reporter.displayName if f.reporter else "Unknown"
+        labels      = ", ".join(f.labels) if f.labels else "—"
+        priority    = f.priority.name if f.priority else "—"
+        status      = f.status.name
+        description = (f.description or "").strip()
+
+        status_style   = STATUS_STYLES.get(status.lower(), "white")
+        priority_style = PRIORITY_STYLES.get(priority.lower(), "white")
+        url = f"{get_jira_server()}/browse/{issue.key}"
+
+        meta = Table.grid(padding=(0, 3), expand=False)
+        meta.add_column(style="bold bright_black", no_wrap=True, min_width=10)
+        meta.add_column(min_width=22)
+        meta.add_column(style="bold bright_black", no_wrap=True, min_width=10)
+        meta.add_column(min_width=16)
+        meta.add_row("STATUS",   Text(status, style=status_style),
+                     "PRIORITY", Text(priority, style=priority_style))
+        meta.add_row("ASSIGNEE", assignee, "REPORTER", reporter)
+        meta.add_row("LABELS",   Text(labels, style="cyan"), "", "")
+
+        truncated = (description[:800] + "\n[dim]…truncated[/dim]") if len(description) > 800 else (description or "[dim]—[/dim]")
+        desc_block = Group(
+            Rule(style="bright_black"),
+            Text.from_markup("[bold bright_black]DESCRIPTION[/bold bright_black]"),
+            Text.from_markup(f"\n{truncated}"),
+        )
+        url_line = Text.assemble(("URL  ", "bold bright_black"), (url, f"link {url} bright_cyan"))
+        content = Group(
+            Text(f.summary, style="bold white"),
+            Text(""),
+            meta,
+            Text(""),
+            url_line,
+            Text(""),
+            desc_block,
+        )
+        self.call_from_thread(self._update_content, content)
+
+    def _update_content(self, content) -> None:
+        self.query_one("#bp-content", Static).update(content)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        val = event.value.strip()
+        if val:
+            self.branch_suffix = val
+            self.exit()
+
+    def action_submit(self) -> None:
+        val = self.query_one("#bp-input", Input).value.strip()
+        if val:
+            self.branch_suffix = val
+            self.exit()
+
+    def action_cancel(self) -> None:
+        self.exit()
+
+
 # --- PR helpers ---
 
 PR_STATUS_STYLES = {
@@ -1187,12 +1454,10 @@ class PrPickerApp(App):
     DataTable > .datatable--odd-row  { background: #080c08; color: #b8d4b8; }
     DataTable > .datatable--even-row { background: #0a0e0a; color: #b8d4b8; }
     #filter-bar {
-        dock: bottom;
         display: none;
         border: tall #00ff41;
         background: #0d1a0d;
         color: #00ff41;
-        margin-bottom: 1;
     }
     Footer { background: #0d1a0d; color: #4d8a4d; }
     Footer > .footer--key { background: #152015; color: #00e5ff; }
@@ -1239,10 +1504,10 @@ class PrPickerApp(App):
             author = pr.get("author", {}).get("name", "")
             table.add_row(
                 RichText(status, style=style),
-                author,
-                pr.get("repositoryName", ""),
-                pr.get("source", {}).get("branch", ""),
-                pr.get("name", ""),
+                RichText(author, style="#b39ddb"),
+                RichText(pr.get("repositoryName", ""), style="#ffb300"),
+                RichText(pr.get("source", {}).get("branch", ""), style="#00e5ff"),
+                RichText(pr.get("name", ""), style="#b8d4b8"),
                 key=str(i),
             )
 
@@ -1414,7 +1679,7 @@ def cmd_set(ticket: str | None, jql: str | None, max_results: int) -> None:
         if jql:
             issues = list(jira.search_issues(
                 jql, maxResults=max_results,
-                fields=["summary", "status", "assignee", "priority"] + extra_field_ids,
+                fields=["summary", "status", "assignee", "priority", "parent", "issuetype"] + extra_field_ids,
             ))
         else:
             issues = fetch_issues_for_projects(jira, projects, max_results, extra_field_ids)
@@ -1565,12 +1830,10 @@ class BranchPickerApp(App):
     DataTable > .datatable--odd-row  { background: #080c08; color: #b8d4b8; }
     DataTable > .datatable--even-row { background: #0a0e0a; color: #b8d4b8; }
     #filter-bar {
-        dock: bottom;
         display: none;
         border: tall #00ff41;
         background: #0d1a0d;
         color: #00ff41;
-        margin-bottom: 1;
     }
     Footer { background: #0d1a0d; color: #4d8a4d; }
     Footer > .footer--key { background: #152015; color: #00e5ff; }
@@ -1606,8 +1869,8 @@ class BranchPickerApp(App):
         table = self.query_one(DataTable)
         table.clear()
         for branch, is_current in branches:
-            marker = RichText("*", style="bold green") if is_current else RichText("")
-            label  = RichText(branch, style="bold green") if is_current else RichText(branch)
+            marker = RichText("*", style="bold #00ff41") if is_current else RichText("")
+            label  = RichText(branch, style="bold #00e5ff") if is_current else RichText(branch, style="#b8d4b8")
             table.add_row(marker, label, key=branch)
 
     def on_input_changed(self, event: Input.Changed) -> None:
@@ -2031,7 +2294,7 @@ class FilePickerApp(App):
     DataTable > .datatable--even-row { background: #0a0e0a; color: #b8d4b8; }
     .section-filter {
         display: none;
-        border-top: tall #1a3a1a;
+        border-top: tall #00ff41;
         background: #0d1a0d;
         color: #00ff41;
     }
@@ -2176,28 +2439,25 @@ class FilePickerApp(App):
 
         label = FILE_STATUS_LABELS.get(status, status)
 
-        # Status label: green in staged section, type colour everywhere else
+        # Status label: matrix green in staged section, type colour everywhere else
         if section_id == "staged":
-            status_style = "bold green"
+            status_style = "bold #00ff41"
         elif is_untracked_type:
-            status_style = "bold red"
+            status_style = "bold #ff5555"
         elif status == "D":
-            status_style = "bold red"
+            status_style = "bold #ff5555"
         else:
-            status_style = "bold dark_orange"
+            status_style = "bold #ffb300"
 
         # Filename colour
         if is_untracked_type:
-            path_style = "red"
+            path_style = "#ff5555"
         elif status in ("M", "D", "R", "C"):
-            path_style = "dark_orange"
+            path_style = "#ffb300"
         else:
             path_style = ""
 
-        path_cell = (
-            RichText.from_markup(f"[{path_style}]{path}[/{path_style}]")
-            if path_style else RichText(path)
-        )
+        path_cell = RichText(path, style=path_style) if path_style else RichText(path)
         table.add_row(RichText(label, style=status_style), path_cell, key=item_key)
 
     # --- refresh ---
@@ -2420,11 +2680,22 @@ def cmd_branch(name: str | None, show_all: bool) -> None:
         subprocess.run(["git", "switch", "-C", branch_name, default_branch], check=True)
         return
 
+    if _get_current_branch() in ("main", "master"):
+        jira_client = get_jira_client()
+        prompt_app = BranchPromptApp(ticket, jira_client)
+        prompt_app.run()
+        if not prompt_app.branch_suffix:
+            click.echo("Cancelled.", err=True)
+            return
+        branch_name = f"{ticket}-{prompt_app.branch_suffix}"
+        default_branch = _get_default_branch()
+        click.echo(f"Creating branch: {branch_name} (from {default_branch})")
+        subprocess.run(["git", "switch", "-C", branch_name, default_branch], check=True)
+
     all_branches = _get_local_branches()
     matching = [(b, cur) for b, cur in all_branches if ticket.lower() in b.lower()]
 
     if not matching:
-        click.echo(f"No local branches found matching {ticket}.")
         return
 
     app = BranchPickerApp(matching)
@@ -2432,14 +2703,25 @@ def cmd_branch(name: str | None, show_all: bool) -> None:
 
     if app.selected_branch:
         subprocess.run(["git", "switch", app.selected_branch], check=True)
-    else:
-        click.echo("No branch selected.", err=True)
 
 
 @main.command("add")
 def cmd_add() -> None:
     """Interactively stage and unstage files."""
     ticket = ensure_ticket()
+
+    if _get_current_branch() in ("main", "master"):
+        jira_client = get_jira_client()
+        prompt_app = BranchPromptApp(ticket, jira_client)
+        prompt_app.run()
+        if not prompt_app.branch_suffix:
+            click.echo("Cancelled.", err=True)
+            return
+        branch_name = f"{ticket}-{prompt_app.branch_suffix}"
+        default_branch = _get_default_branch()
+        click.echo(f"Creating branch: {branch_name} (from {default_branch})")
+        subprocess.run(["git", "switch", "-C", branch_name, default_branch], check=True)
+
     staged, modified, deleted, untracked = _get_file_statuses()
 
     if not staged and not modified and not deleted and not untracked:
@@ -2872,7 +3154,7 @@ class PruneApp(App):
         table.add_column("Branch", key="name")
         table.add_column("Status", key="status")
         for b in self.branches:
-            table.add_row(" ", b["name"], self._status_text(b["status"]), key=b["name"])
+            table.add_row(" ", Text(b["name"], style="#00e5ff"), self._status_text(b["status"]), key=b["name"])
         table.focus()
 
     @staticmethod
@@ -3075,6 +3357,29 @@ PRIORITY_STYLES: dict[str, str] = {
     "low":      "green",
     "lowest":   "dim green",
 }
+
+
+@main.command("debug")
+@click.argument("ticket")
+def cmd_debug(ticket: str) -> None:
+    """Dump every raw JIRA field for a ticket — useful for inspecting API shape."""
+    import json
+    from rich.console import Console
+    from rich.syntax import Syntax
+
+    jira = get_jira_client()
+    try:
+        issue = jira.issue(ticket)
+    except JIRAError as e:
+        raise click.ClickException(f"JIRA API error: {e.text}") from e
+
+    console = Console()
+    console.print(f"\n[bold #00e5ff]{issue.key}[/]  [#b8d4b8]{issue.fields.summary}[/]\n")
+
+    raw = issue.raw.get("fields", {})
+    # Pretty-print as JSON, skipping null/empty values
+    filtered = {k: v for k, v in raw.items() if v not in (None, [], "", {})}
+    console.print(Syntax(json.dumps(filtered, indent=2, default=str), "json", theme="monokai"))
 
 
 @main.command("info")
