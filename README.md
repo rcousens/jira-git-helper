@@ -91,7 +91,7 @@ Config is stored in `~/.config/jira-git-helper/config`. Use `jg config set/get/l
 | Key | Description |
 |---|---|
 | `projects` | Comma-separated project keys to scope the ticket picker, e.g. `SWY` or `SWY,DOPS` |
-| `jql.<PROJECT>` | Custom JQL for a specific project (see below) |
+| `fields.<PROJECT>` | Comma-separated JIRA field IDs to show as extra columns in `jg set` (see below) |
 
 ### Project scoping
 
@@ -106,27 +106,32 @@ jg config set projects SWY
 jg config set projects SWY,DOPS
 ```
 
-### Per-project JQL
+### Named filters
 
-By default each project uses:
-```
-project = <KEY> AND assignee = currentUser() ORDER BY updated DESC
-```
+Each project can have any number of named JQL filters, managed interactively inside
+`jg set` by pressing `f`. One filter can be marked as the default — it is loaded
+automatically every time `jg set` opens.
 
-Override this for any project with a `jql.<PROJECT>` key:
+**JQL resolution order** (for a given project):
+1. Session-active filter (set via Enter in the filter modal — not persisted across runs)
+2. Persisted default filter (set via Space in the filter modal — saved to config)
+3. Built-in default: `project = PROJECT AND assignee = currentUser() ORDER BY updated DESC`
+
+Filters are visible in `jg config list`.
+
+### Extra columns in `jg set`
+
+Use `fields.<PROJECT>` to add custom JIRA fields as columns in the ticket picker. The easiest
+way to discover field IDs is the built-in field picker: open `jg set`, press `d` on any ticket,
+then space to toggle fields and Enter to save.
+
+Or set them manually:
 
 ```sh
-jg config set jql.SWY "project = SWY AND sprint in openSprints() AND assignee = currentUser()"
-jg config set jql.DOPS "project = DOPS AND status != Done AND assignee = currentUser()"
+jg config set fields.SWY customfield_10234,customfield_10567
 ```
 
-**JQL resolution order** (for a given project key):
-1. `jql.<PROJECT>` — if set, this wins
-2. `project = PROJECT AND assignee = currentUser() ORDER BY updated DESC` — default
-
-When multiple projects are configured and none have custom JQL, a single combined
-JIRA query is used. If any project has custom JQL, one query per project is run and
-results are merged.
+Field values are also included in filter-bar searches.
 
 ### View your current config
 
@@ -134,7 +139,7 @@ results are merged.
 jg config list
 ```
 
-This shows all standard keys plus any `jql.<PROJECT>` keys you've set.
+This shows all standard keys plus any named filters configured for each project.
 
 ---
 
@@ -256,9 +261,35 @@ jg set --max 500
 | Key | Action |
 |---|---|
 | `↑` / `↓` | Move between tickets |
-| `/` | Open filter bar — type to narrow by key, summary, assignee, or status |
+| `/` | Open filter bar — type to narrow by key, summary, assignee, status, or any custom column |
 | `Enter` | Select the highlighted ticket (or confirm filter and return to list) |
+| `i` | Open a detail panel for the highlighted ticket (summary, status, assignee, description, etc.) |
+| `o` | Open the highlighted ticket in your browser |
+| `d` | Open the field picker — browse all fields on the ticket, space to toggle columns, Enter to save |
+| `f` | Open the filter manager for the current ticket's project |
+| `r` | Refresh — re-query JIRA and reload the list |
 | `Escape` | Close filter / cancel |
+
+**Filter manager (`f`):**
+
+Pressing `f` opens a per-project filter list. The active filter is shown in a status
+bar above the footer — `*` means no custom filter (built-in default JQL), otherwise
+the filter name is shown, e.g. `SWY: Sprint  DOPS: *`.
+
+| Marker | Meaning |
+|---|---|
+| `●` | Persisted default, currently active |
+| `▶` | Session-activated (Enter) — active this run only, not persisted |
+| `○` | Persisted default, but currently overridden by a session-activated filter |
+
+| Key | Action |
+|---|---|
+| `Enter` | Activate filter for this session (not saved as default) |
+| `Space` | Set filter as the persisted default (saved to config) |
+| `n` | Create a new filter — prompts for a name, then a JQL query |
+| `e` | Edit the JQL of the selected filter |
+| `d` | Delete the selected filter (with confirmation) |
+| `Escape` | Close the filter manager |
 
 ---
 
@@ -362,6 +393,8 @@ prompt. The commit message is automatically prefixed with the active ticket key.
 | `Escape` | Close filter / cancel |
 
 > **Note:** If no ticket is set, `jg add` will prompt you to pick one interactively before proceeding.
+>
+> **Note:** If the current branch is not prefixed with the active ticket key, `jg add` will prompt for a branch suffix and create the branch automatically before committing.
 
 ---
 
@@ -397,6 +430,21 @@ jg push
 After pushing, `jg push` looks up the active ticket in JIRA to find any linked open
 PR. If found, it opens that PR. If not found but GitHub printed a "Create a pull
 request" URL during the push, it opens that instead.
+
+---
+
+### `jg reset`
+
+Switch to the default branch and pull the latest from origin.
+
+```sh
+jg reset
+```
+
+The default branch is detected from `origin/HEAD`, falling back to `main` or `master`.
+
+If uncommitted changes would block the branch switch, `jg reset` offers to stash them
+and continue. After a successful pull it then offers to restore the stash.
 
 ---
 
@@ -463,16 +511,15 @@ Exits with a non-zero status if the key is not set.
 ### `jg config set <key> <value>`
 
 Set a config value. Standard keys are `server`, `email`, `token`, and `projects`.
-Use `jql.<PROJECT>` to set per-project JQL:
 
 ```sh
 jg config set server   https://yourcompany.atlassian.net
 jg config set email    you@yourcompany.com
 jg config set token    <api-token>
 jg config set projects SWY,DOPS
-
-jg config set jql.SWY "project = SWY AND sprint in openSprints() AND assignee = currentUser()"
 ```
+
+Named JQL filters are managed interactively with the `f` key inside `jg set`.
 
 ---
 

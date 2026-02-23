@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import shutil
@@ -124,17 +125,69 @@ def get_projects() -> list[str]:
     return [p.strip().upper() for p in raw.split(",") if p.strip()]
 
 
+def get_fields_for_project(project: str) -> list[str]:
+    """Return extra field IDs configured for a project via fields.<PROJECT> config key."""
+    raw = get_config(f"fields.{project}") or ""
+    return [f.strip() for f in raw.split(",") if f.strip()]
+
+
+def get_filters_for_project(project: str) -> list[dict]:
+    """Return saved named filters for a project as a list of {name, jql} dicts."""
+    raw = get_config(f"filters.{project}") or "[]"
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return []
+
+
+def set_filters_for_project(project: str, filters: list[dict]) -> None:
+    """Persist the named filter list for a project."""
+    set_config(f"filters.{project}", json.dumps(filters, separators=(",", ":")))
+
+
+def get_active_filter_name(project: str) -> str | None:
+    """Return the persisted default filter name for a project, or None."""
+    return get_config(f"filters.{project}.default") or None
+
+
+def set_active_filter_name(project: str, name: str | None) -> None:
+    """Set (or clear) the persisted default filter name for a project."""
+    config = _read_config()
+    key = f"filters.{project}.default"
+    if name:
+        config[key] = name
+    else:
+        config.pop(key, None)
+    _write_config(config)
+
+
+# Session-level active filter overrides (not persisted — live for the process lifetime).
+# Maps project key → filter name (or None to explicitly use no filter this session).
+# Key absent → fall back to config default.
+_session_active_filters: dict[str, str | None] = {}
+
+
+def get_effective_filter_name(project: str) -> str | None:
+    """Return the currently active filter name for a project (session > config default)."""
+    if project in _session_active_filters:
+        return _session_active_filters[project]
+    return get_active_filter_name(project)
+
+
 def get_jql_for_project(project: str) -> str:
     """Return the JQL for a specific project key.
 
     Resolution order:
-      1. jql.<PROJECT> config key
-      2. Default: project = PROJECT AND assignee = currentUser() ORDER BY updated DESC
+      1. Session-active filter (set via Enter in the filter picker — not persisted)
+      2. Persisted default filter (set via Space in the filter picker)
+      3. Built-in default: project = PROJECT AND assignee = currentUser() ORDER BY updated DESC
     """
-    return (
-        get_config(f"jql.{project}")
-        or f"project = {project} AND assignee = currentUser() ORDER BY updated DESC"
-    )
+    active_name = get_effective_filter_name(project)
+    if active_name:
+        for f in get_filters_for_project(project):
+            if f["name"] == active_name:
+                return f["jql"]
+    return f"project = {project} AND assignee = currentUser() ORDER BY updated DESC"
 
 
 # --- JIRA helpers ---
@@ -180,22 +233,44 @@ def get_jira_client() -> JIRA:
     return JIRA(server=server, basic_auth=(email, token))
 
 
+_field_id_by_name: dict[str, str] = {}   # lower display name → field id
+_field_name_by_id: dict[str, str] = {}   # field id → display name
+
+
+def _ensure_fields_cached(jira_client: JIRA) -> None:
+    if _field_name_by_id:
+        return
+    for field in jira_client.fields():
+        _field_id_by_name[field["name"].lower()] = field["id"]
+        _field_name_by_id[field["id"]] = field["name"]
+
+
+def _get_jira_field_id(jira_client: JIRA, field_name: str) -> str | None:
+    _ensure_fields_cached(jira_client)
+    return _field_id_by_name.get(field_name.lower())
+
+
+def _get_jira_field_name(field_id: str) -> str:
+    return _field_name_by_id.get(field_id, field_id)
+
+
 def fetch_issues_for_projects(
     jira: JIRA,
     projects: list[str],
     max_results: int,
+    extra_fields: list[str] | None = None,
 ) -> list:
     """Fetch issues across all configured projects, returning a merged list.
 
     Strategy:
     - 0 projects: use _FALLBACK_JQL (single query)
     - 1 project: use get_jql_for_project() (single query)
-    - Multiple projects, none with custom jql.<PROJECT>: build a combined OR query
+    - Multiple projects, none with an active filter: build a combined OR query
       so JIRA handles sorting in a single round-trip
-    - Multiple projects, any with custom jql.<PROJECT>: run one query per project
+    - Multiple projects, any with an active filter: run one query per project
       and merge/deduplicate in Python
     """
-    fields = ["summary", "status", "assignee", "priority"]
+    fields = ["summary", "status", "assignee", "priority"] + (extra_fields or [])
 
     if not projects:
         return list(jira.search_issues(_FALLBACK_JQL, maxResults=max_results, fields=fields))
@@ -206,7 +281,7 @@ def fetch_issues_for_projects(
         ))
 
     # Multiple projects
-    has_custom_jql = any(get_config(f"jql.{p}") for p in projects)
+    has_custom_jql = any(get_effective_filter_name(p) for p in projects)
 
     if not has_custom_jql:
         project_clause = " OR ".join(f"project = {p}" for p in projects)
@@ -239,24 +314,48 @@ class JiraListApp(App):
         dock: bottom;
         display: none;
         border: tall $accent;
-        margin-bottom: 1;
+    }
+    #filter-status {
+        height: 1;
+        background: $panel;
+        color: $text-muted;
+        padding: 0 1;
+        display: none;
     }
     """
 
     BINDINGS = [
         Binding("escape", "quit", "Quit"),
         Binding("enter", "select_ticket", "Select", show=True),
+        Binding("i", "show_info", "Info", show=True),
+        Binding("o", "open_ticket", "Open", show=True),
+        Binding("d", "show_fields", "Fields", show=True),
+        Binding("f", "show_filters", "Filters", show=True),
+        Binding("r", "refresh", "Refresh", show=True),
         Binding("slash", "activate_filter", "Filter", show=True),
     ]
 
-    def __init__(self, issues: list) -> None:
+    def __init__(
+        self,
+        issues: list,
+        jira_client=None,
+        extra_field_ids: list[str] | None = None,
+        field_names: dict[str, str] | None = None,
+        projects: list[str] | None = None,
+    ) -> None:
         super().__init__()
         self.all_issues = issues
         self.visible_keys: list[str] = [i.key for i in issues]
         self.selected_ticket: str | None = None
+        self.jira_client = jira_client
+        self.extra_field_ids: list[str] = extra_field_ids or []
+        self.field_names: dict[str, str] = field_names or {}
+        self.reload_needed: bool = False
+        self.projects: list[str] = projects or []
 
     def compose(self) -> ComposeResult:
         yield DataTable(cursor_type="row", zebra_stripes=True)
+        yield Static("", id="filter-status")
         yield Input(id="filter-bar", placeholder="Filter…")
         yield Footer()
 
@@ -264,10 +363,26 @@ class JiraListApp(App):
         table = self.query_one(DataTable)
         table.add_column("Key", width=14)
         table.add_column("Status", width=16)
-        table.add_column("Assignee", width=24)
+        table.add_column("Assignee", width=20)
+        for fid in self.extra_field_ids:
+            table.add_column(self.field_names.get(fid, fid), width=16)
         table.add_column("Summary")
         self._populate_table(self.all_issues)
+        self._update_filter_status()
         table.focus()
+
+    def _field_str(self, issue, field_id: str) -> str:
+        val = getattr(issue.fields, field_id, None)
+        if val is None:
+            return ""
+        if isinstance(val, str):
+            return val
+        if isinstance(val, list):
+            return ", ".join(str(getattr(v, "name", v)) for v in val)
+        for attr in ("value", "name", "displayName"):
+            if (s := getattr(val, attr, None)) is not None:
+                return str(s)
+        return str(val)
 
     def _populate_table(self, issues: list) -> None:
         table = self.query_one(DataTable)
@@ -279,13 +394,11 @@ class JiraListApp(App):
                 if issue.fields.assignee
                 else "Unassigned"
             )
-            table.add_row(
-                issue.key,
-                issue.fields.status.name,
-                assignee,
-                issue.fields.summary,
-                key=issue.key,
-            )
+            row = [issue.key, issue.fields.status.name, assignee]
+            for fid in self.extra_field_ids:
+                row.append(self._field_str(issue, fid))
+            row.append(issue.fields.summary)
+            table.add_row(*row, key=issue.key)
             self.visible_keys.append(issue.key)
 
     def on_input_changed(self, event: Input.Changed) -> None:
@@ -294,21 +407,20 @@ class JiraListApp(App):
             self._populate_table(self.all_issues)
             return
         filtered = [
-            i
-            for i in self.all_issues
+            i for i in self.all_issues
             if search in i.key.lower()
             or search in i.fields.summary.lower()
-            or search
-            in (
-                i.fields.assignee.displayName.lower()
-                if i.fields.assignee
-                else ""
-            )
+            or search in (i.fields.assignee.displayName.lower() if i.fields.assignee else "")
             or search in i.fields.status.name.lower()
+            or any(search in self._field_str(i, fid).lower() for fid in self.extra_field_ids)
         ]
         self._populate_table(filtered)
 
     def on_key(self, event) -> None:
+        # Don't handle navigation keys when a modal is overlaying this screen
+        if len(self.screen_stack) > 1:
+            return
+
         focused = self.focused
         if isinstance(focused, Input):
             if event.key == "escape":
@@ -345,16 +457,593 @@ class JiraListApp(App):
         filter_bar.display = True
         filter_bar.focus()
 
-    def action_select_ticket(self) -> None:
+    def _cursor_key(self) -> str | None:
         table = self.query_one(DataTable)
         if table.row_count == 0:
+            return None
+        return table.coordinate_to_cell_key(Coordinate(table.cursor_row, 0)).row_key.value
+
+    def action_select_ticket(self) -> None:
+        if isinstance(self.focused, Input):
             return
-        cell_key = table.coordinate_to_cell_key(Coordinate(table.cursor_row, 0))
-        self.selected_ticket = cell_key.row_key.value
+        key = self._cursor_key()
+        if key:
+            self.selected_ticket = key
+            self.exit()
+
+    def action_open_ticket(self) -> None:
+        if isinstance(self.focused, Input):
+            return
+        key = self._cursor_key()
+        if key:
+            server = get_jira_server()
+            webbrowser.open(f"{server}/browse/{key}")
+
+    def action_show_fields(self) -> None:
+        if isinstance(self.focused, Input) or self.jira_client is None:
+            return
+        key = self._cursor_key()
+        if key:
+            self.run_worker(lambda: self._fetch_fields_worker(key), thread=True)
+
+    def _fetch_fields_worker(self, key: str) -> None:
+        full_issue = self.jira_client.issue(key)
+        project = key.split("-")[0]
+        current = set(get_fields_for_project(project))
+        raw_fields = full_issue.raw.get("fields", {})
+        field_list = []
+        for fid, raw_val in raw_fields.items():
+            if raw_val is None or raw_val == [] or raw_val == "":
+                continue
+            fname = _get_jira_field_name(fid)
+            fval = _preview_raw_value(raw_val)
+            field_list.append((fid, fname, fval))
+        field_list.sort(key=lambda x: x[1].lower())
+        self.call_from_thread(
+            self.push_screen,
+            FieldPickerModal(field_list, current, project),
+            self._on_fields_saved,
+        )
+
+    def _on_fields_saved(self, result: set[str] | None) -> None:
+        if result is None:
+            return
+        self.reload_needed = True
         self.exit()
+
+    def action_refresh(self) -> None:
+        if isinstance(self.focused, Input):
+            return
+        self.reload_needed = True
+        self.exit()
+
+    def _update_filter_status(self) -> None:
+        status = self.query_one("#filter-status", Static)
+        if not self.projects:
+            status.display = False
+            return
+        parts = [f"{p}: {get_effective_filter_name(p) or '*'}" for p in self.projects]
+        status.update("  ".join(parts))
+        status.display = True
+
+    def action_show_filters(self) -> None:
+        if isinstance(self.focused, Input) or not self.projects:
+            return
+        key = self._cursor_key()
+        project = key.split("-")[0] if key else self.projects[0]
+        self.push_screen(FilterListModal(project), self._on_filters_closed)
+
+    def _on_filters_closed(self, changed: bool | None) -> None:
+        self._update_filter_status()
+        if changed:
+            self.reload_needed = True
+            self.exit()
+
+    def action_show_info(self) -> None:
+        if isinstance(self.focused, Input) or self.jira_client is None:
+            return
+        key = self._cursor_key()
+        if key:
+            self.push_screen(TicketInfoModal(key, self.jira_client))
 
     def action_quit(self) -> None:
         self.exit()
+
+
+def _preview_raw_value(val) -> str:
+    """Convert a raw JIRA field value (from issue.raw) to a short display string."""
+    if val is None:
+        return ""
+    if isinstance(val, str):
+        return val[:80]
+    if isinstance(val, list):
+        if not val:
+            return ""
+        items = []
+        for v in val[:4]:
+            if isinstance(v, str):
+                items.append(v)
+            elif isinstance(v, dict):
+                for key in ("name", "value", "displayName", "key"):
+                    if key in v:
+                        items.append(str(v[key]))
+                        break
+        preview = ", ".join(items)
+        if len(val) > 4:
+            preview += f" +{len(val) - 4}"
+        return preview[:80]
+    if isinstance(val, dict):
+        for key in ("value", "name", "displayName", "key"):
+            if key in val:
+                return str(val[key])[:80]
+        return str(val)[:80]
+    return str(val)[:80]
+
+
+class FieldPickerModal(ModalScreen):
+    CSS = """
+    FieldPickerModal {
+        align: center middle;
+        background: $background 80%;
+    }
+    #fp-dialog {
+        width: 95%;
+        height: 90%;
+        border: thick $accent;
+        background: $surface;
+    }
+    #fp-title {
+        text-style: bold;
+        padding: 0 1;
+        background: $boost;
+        color: $text-muted;
+    }
+    #fp-table { height: 1fr; }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("enter", "confirm", "Save & close", show=True),
+        Binding("space", "toggle_field", "Toggle", show=True),
+    ]
+
+    def __init__(
+        self,
+        fields: list[tuple[str, str, str]],  # (id, name, value_preview)
+        selected_ids: set[str],
+        project: str,
+    ) -> None:
+        super().__init__()
+        self._fields = fields
+        self.selected_ids = set(selected_ids)
+        self.project = project
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="fp-dialog"):
+            yield Label(
+                f" Field picker — {self.project}   Space to toggle · Enter to save",
+                id="fp-title",
+            )
+            yield DataTable(id="fp-table", cursor_type="row", zebra_stripes=True)
+            yield Footer()
+
+    def on_mount(self) -> None:
+        table = self.query_one("#fp-table", DataTable)
+        table.add_column(" ", width=3)
+        table.add_column("Field name", width=32)
+        table.add_column("Field ID", width=22)
+        table.add_column("Current value")
+        for fid, fname, fval in self._fields:
+            marker = "✓" if fid in self.selected_ids else " "
+            table.add_row(marker, fname, fid, fval, key=fid)
+        table.focus()
+
+    def on_key(self, event) -> None:
+        if event.key == "space":
+            table = self.query_one("#fp-table", DataTable)
+            if table.row_count == 0:
+                return
+            fid = table.coordinate_to_cell_key(
+                Coordinate(table.cursor_row, 0)
+            ).row_key.value
+            if fid in self.selected_ids:
+                self.selected_ids.discard(fid)
+            else:
+                self.selected_ids.add(fid)
+            marker = "✓" if fid in self.selected_ids else " "
+            table.update_cell_at(Coordinate(table.cursor_row, 0), marker)
+            event.prevent_default()
+        elif event.key == "enter":
+            self.action_confirm()
+            event.prevent_default()
+
+    def action_confirm(self) -> None:
+        set_config(
+            f"fields.{self.project}",
+            ",".join(sorted(self.selected_ids)),
+        )
+        self.dismiss(self.selected_ids)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class TextInputModal(ModalScreen):
+    """Generic single-line text prompt. Dismisses with the entered string, or None on cancel."""
+
+    CSS = """
+    TextInputModal { align: center middle; background: $background 70%; }
+    #tip-dialog {
+        width: 80%;
+        height: auto;
+        padding: 1 2;
+        border: thick $accent;
+        background: $surface;
+    }
+    #tip-title { text-style: bold; padding-bottom: 1; }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, title: str, placeholder: str = "", initial: str = "") -> None:
+        super().__init__()
+        self._title = title
+        self._placeholder = placeholder
+        self._initial = initial
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="tip-dialog"):
+            yield Label(self._title, id="tip-title")
+            yield Input(value=self._initial, placeholder=self._placeholder)
+            yield Footer()
+
+    def on_mount(self) -> None:
+        self.query_one(Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        val = event.value.strip()
+        if val:
+            self.dismiss(val)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class ConfirmModal(ModalScreen):
+    """Yes/No confirmation dialog. Dismisses with True (yes) or False (no)."""
+
+    CSS = """
+    ConfirmModal { align: center middle; background: $background 70%; }
+    #confirm-dialog {
+        width: 60;
+        height: auto;
+        padding: 1 2;
+        border: thick $warning;
+        background: $surface;
+    }
+    #confirm-message { padding-bottom: 1; }
+    #confirm-hint { color: $text-muted; }
+    """
+
+    BINDINGS = [
+        Binding("y", "confirm_yes", "Yes", show=True),
+        Binding("n", "confirm_no", "No", show=True),
+    ]
+
+    def __init__(self, message: str) -> None:
+        super().__init__()
+        self._message = message
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="confirm-dialog"):
+            yield Label(self._message, id="confirm-message")
+            yield Label("y — yes    n / Escape — no", id="confirm-hint")
+            yield Footer()
+
+    def on_key(self, event) -> None:
+        if event.key in ("y", "enter"):
+            self.dismiss(True)
+            event.prevent_default()
+        elif event.key in ("n", "escape"):
+            self.dismiss(False)
+            event.prevent_default()
+
+    def action_confirm_yes(self) -> None:
+        self.dismiss(True)
+
+    def action_confirm_no(self) -> None:
+        self.dismiss(False)
+
+
+class FilterListModal(ModalScreen):
+    """Manage named JQL filters for a single project."""
+
+    CSS = """
+    FilterListModal { align: center middle; background: $background 80%; }
+    #fl-dialog {
+        width: 95%;
+        height: 90%;
+        border: thick $accent;
+        background: $surface;
+    }
+    #fl-header {
+        text-style: bold;
+        padding: 0 1;
+        background: $boost;
+        color: $text-muted;
+    }
+    #fl-table { height: 1fr; }
+    """
+
+    BINDINGS = [
+        Binding("escape", "close_modal", "Close"),
+        Binding("n", "new_filter", "New", show=True),
+        Binding("e", "edit_filter", "Edit JQL", show=True),
+        Binding("d", "delete_filter", "Delete", show=True),
+        Binding("space", "set_default", "Set default", show=True),
+    ]
+
+    def __init__(self, project: str) -> None:
+        super().__init__()
+        self.project = project
+        self._filters: list[dict] = get_filters_for_project(project)
+        self._changed = False
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="fl-dialog"):
+            yield Label(
+                f" Filters — {self.project}   Enter activate · Space set default · n new · e edit JQL · d delete",
+                id="fl-header",
+            )
+            yield DataTable(id="fl-table", cursor_type="row", zebra_stripes=True)
+            yield Footer()
+
+    def on_mount(self) -> None:
+        table = self.query_one("#fl-table", DataTable)
+        table.add_column(" ", width=3)
+        table.add_column("Name", width=28)
+        table.add_column("JQL")
+        self._refresh_table()
+        table.focus()
+
+    def _refresh_table(self) -> None:
+        table = self.query_one("#fl-table", DataTable)
+        cursor = table.cursor_row
+        table.clear()
+        effective = get_effective_filter_name(self.project)
+        default = get_active_filter_name(self.project)
+        for i, f in enumerate(self._filters):
+            name = f["name"]
+            if name == effective:
+                marker = "▶" if name != default else "●"
+            elif name == default:
+                marker = "○"
+            else:
+                marker = " "
+            table.add_row(marker, name, f["jql"], key=str(i))
+        if table.row_count > 0:
+            table.move_cursor(row=min(cursor, table.row_count - 1))
+
+    def _cursor_idx(self) -> int | None:
+        table = self.query_one("#fl-table", DataTable)
+        if table.row_count == 0:
+            return None
+        return int(
+            table.coordinate_to_cell_key(Coordinate(table.cursor_row, 0)).row_key.value
+        )
+
+    def on_key(self, event) -> None:
+        if event.key == "enter":
+            self._do_activate()
+            event.prevent_default()
+        elif event.key == "space":
+            self._do_set_default()
+            event.prevent_default()
+
+    def _do_activate(self) -> None:
+        """Activate filter for this session only (not persisted)."""
+        idx = self._cursor_idx()
+        if idx is None:
+            return
+        name = self._filters[idx]["name"]
+        current = get_effective_filter_name(self.project)
+        if current == name:
+            # Toggle off session override — fall back to config default
+            _session_active_filters.pop(self.project, None)
+        else:
+            _session_active_filters[self.project] = name
+        self._changed = True
+        self.dismiss(True)
+
+    def _do_set_default(self) -> None:
+        """Set filter as the persisted config default."""
+        idx = self._cursor_idx()
+        if idx is None:
+            return
+        name = self._filters[idx]["name"]
+        current_default = get_active_filter_name(self.project)
+        if current_default == name:
+            # Toggle off — clear config default
+            set_active_filter_name(self.project, None)
+            _session_active_filters.pop(self.project, None)
+        else:
+            set_active_filter_name(self.project, name)
+            _session_active_filters[self.project] = name
+        self._changed = True
+        self._refresh_table()
+
+    def action_new_filter(self) -> None:
+        self.app.push_screen(
+            TextInputModal("New filter — name", placeholder="e.g. My Sprint"),
+            self._on_new_name,
+        )
+
+    def _on_new_name(self, name: str | None) -> None:
+        if not name:
+            return
+        if any(f["name"] == name for f in self._filters):
+            return  # duplicate — silently ignore
+        default_jql = f"project = {self.project} AND assignee = currentUser() ORDER BY updated DESC"
+        self.app.push_screen(
+            TextInputModal("New filter — JQL", placeholder="project = ...", initial=default_jql),
+            lambda jql: self._on_new_jql(name, jql),
+        )
+
+    def _on_new_jql(self, name: str, jql: str | None) -> None:
+        if not jql:
+            return
+        self._filters.append({"name": name, "jql": jql})
+        set_filters_for_project(self.project, self._filters)
+        self._refresh_table()
+
+    def action_edit_filter(self) -> None:
+        idx = self._cursor_idx()
+        if idx is None:
+            return
+        name = self._filters[idx]["name"]
+        current_jql = self._filters[idx]["jql"]
+        self.app.push_screen(
+            TextInputModal("Edit JQL", initial=current_jql),
+            lambda jql: self._on_edit_jql(name, jql),
+        )
+
+    def _on_edit_jql(self, name: str, jql: str | None) -> None:
+        if not jql:
+            return
+        for f in self._filters:
+            if f["name"] == name:
+                f["jql"] = jql
+                break
+        set_filters_for_project(self.project, self._filters)
+        self._refresh_table()
+
+    def action_delete_filter(self) -> None:
+        idx = self._cursor_idx()
+        if idx is None:
+            return
+        name = self._filters[idx]["name"]
+        self.app.push_screen(
+            ConfirmModal(f"Delete filter '{name}'?"),
+            lambda confirmed: self._on_delete_confirmed(name, confirmed),
+        )
+
+    def _on_delete_confirmed(self, name: str, confirmed: bool | None) -> None:
+        if not confirmed:
+            return
+        self._filters = [f for f in self._filters if f["name"] != name]
+        set_filters_for_project(self.project, self._filters)
+        # If the deleted filter was active, clear it
+        if get_active_filter_name(self.project) == name:
+            set_active_filter_name(self.project, None)
+        if _session_active_filters.get(self.project) == name:
+            _session_active_filters.pop(self.project, None)
+        self._changed = True
+        self._refresh_table()
+
+    def action_close_modal(self) -> None:
+        self.dismiss(self._changed)
+
+
+class TicketInfoModal(ModalScreen):
+    CSS = """
+    TicketInfoModal {
+        align: center middle;
+        background: $background 80%;
+    }
+    #ti-container {
+        width: 90%;
+        height: 90%;
+        border: thick $accent;
+        background: $surface;
+    }
+    #ti-title {
+        text-style: bold;
+        padding: 0 1;
+        background: $boost;
+        color: $text-muted;
+    }
+    #ti-scroll { height: 1fr; }
+    #ti-content { padding: 1 2; }
+    """
+
+    BINDINGS = [Binding("escape", "dismiss", "Close")]
+
+    def __init__(self, key: str, jira_client) -> None:
+        super().__init__()
+        self._key = key
+        self._jira_client = jira_client
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="ti-container"):
+            yield Label(f" {self._key}", id="ti-title")
+            with ScrollableContainer(id="ti-scroll"):
+                yield Static("Loading…", id="ti-content")
+            yield Footer()
+
+    def on_mount(self) -> None:
+        self.run_worker(self._fetch_info, thread=True)
+
+    def _fetch_info(self) -> None:
+        from rich.console import Group
+        from rich.rule import Rule
+        from rich.table import Table
+        from rich.text import Text
+
+        try:
+            issue = self._jira_client.issue(
+                self._key,
+                fields=["summary", "status", "assignee", "reporter", "priority", "labels", "description", "issuetype"],
+            )
+        except Exception as e:
+            self.app.call_from_thread(self._update_content, f"[red]Error: {e}[/red]")
+            return
+
+        f = issue.fields
+        assignee  = f.assignee.displayName if f.assignee else "Unassigned"
+        reporter  = f.reporter.displayName if f.reporter else "Unknown"
+        labels    = ", ".join(f.labels) if f.labels else "—"
+        priority  = f.priority.name if f.priority else "—"
+        status    = f.status.name
+        description = (f.description or "").strip()
+
+        status_style   = STATUS_STYLES.get(status.lower(), "white")
+        priority_style = PRIORITY_STYLES.get(priority.lower(), "white")
+
+        url = f"{get_jira_server()}/browse/{issue.key}"
+
+        meta = Table.grid(padding=(0, 3), expand=False)
+        meta.add_column(style="bold bright_black", no_wrap=True, min_width=10)
+        meta.add_column(min_width=22)
+        meta.add_column(style="bold bright_black", no_wrap=True, min_width=10)
+        meta.add_column(min_width=16)
+        meta.add_row("STATUS",   Text(status, style=status_style),
+                     "PRIORITY", Text(priority, style=priority_style))
+        meta.add_row("ASSIGNEE", assignee, "REPORTER", reporter)
+        meta.add_row("LABELS",   Text(labels, style="cyan"), "", "")
+
+        truncated = (description[:800] + "\n[dim]…truncated[/dim]") if len(description) > 800 else (description or "[dim]—[/dim]")
+        desc_block = Group(
+            Rule(style="bright_black"),
+            Text.from_markup("[bold bright_black]DESCRIPTION[/bold bright_black]"),
+            Text.from_markup(f"\n{truncated}"),
+        )
+
+        url_line = Text.assemble(("URL  ", "bold bright_black"), (url, f"link {url} bright_cyan"))
+
+        content = Group(
+            Text(f.summary, style="bold white"),
+            Text(""),
+            meta,
+            Text(""),
+            url_line,
+            Text(""),
+            desc_block,
+        )
+
+        self.app.call_from_thread(self._update_content, content)
+
+    def _update_content(self, content) -> None:
+        self.query_one("#ti-content", Static).update(content)
 
 
 # --- PR helpers ---
@@ -548,14 +1237,14 @@ def main(ctx: click.Context) -> None:
 
 @main.command("set")
 @click.argument("ticket", required=False)
-@click.option("--jql", default=None, help="Raw JQL override — bypasses all project and per-project jql config")
+@click.option("--jql", default=None, help="Raw JQL override — bypasses all filters and project config for this run")
 @click.option("--max", "max_results", default=200, show_default=True, help="Max results to fetch")
 def cmd_set(ticket: str | None, jql: str | None, max_results: int) -> None:
     """Set the current JIRA ticket, or browse interactively if no ticket given.
 
     Shows tickets from all configured projects in a single merged list. Each project
-    uses its jql.<PROJECT> config if set, or the default project JQL. Pass --jql to
-    bypass all project config and use a raw JQL query instead.
+    uses its active named filter (if set) or the built-in default JQL. Pass --jql to
+    bypass all filters and use a raw query instead.
     """
     if ticket:
         save_ticket(ticket)
@@ -563,15 +1252,44 @@ def cmd_set(ticket: str | None, jql: str | None, max_results: int) -> None:
         return
 
     jira = get_jira_client()
+    _ensure_fields_cached(jira)
+    projects = get_projects()
+
+    # Migrate any legacy jql.<PROJECT> config keys to named filters
+    for proj in projects:
+        legacy_jql = get_config(f"jql.{proj}")
+        if legacy_jql:
+            if not get_filters_for_project(proj):
+                set_filters_for_project(proj, [{"name": "Default", "jql": legacy_jql}])
+                set_active_filter_name(proj, "Default")
+                _session_active_filters[proj] = "Default"
+                click.echo(f"Migrated jql.{proj} to a named filter 'Default'.", err=True)
+            cfg = _read_config()
+            cfg.pop(f"jql.{proj}", None)
+            _write_config(cfg)
+
+    def _collect_extra_fields() -> tuple[list[str], dict[str, str]]:
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for proj in projects:
+            for fid in get_fields_for_project(proj):
+                if fid not in seen:
+                    seen.add(fid)
+                    ordered.append(fid)
+        names = {fid: _get_jira_field_name(fid) for fid in ordered}
+        return ordered, names
+
+    extra_field_ids, field_names = _collect_extra_fields()
+
     click.echo("Fetching tickets…", err=True)
     try:
         if jql:
             issues = list(jira.search_issues(
                 jql, maxResults=max_results,
-                fields=["summary", "status", "assignee", "priority"],
+                fields=["summary", "status", "assignee", "priority"] + extra_field_ids,
             ))
         else:
-            issues = fetch_issues_for_projects(jira, get_projects(), max_results)
+            issues = fetch_issues_for_projects(jira, projects, max_results, extra_field_ids)
     except JIRAError as e:
         raise click.ClickException(f"JIRA API error: {e.text}") from e
 
@@ -579,14 +1297,31 @@ def cmd_set(ticket: str | None, jql: str | None, max_results: int) -> None:
         click.echo("No issues found.")
         return
 
-    app = JiraListApp(issues)
-    app.run()
+    while True:
+        app = JiraListApp(
+            issues,
+            jira_client=jira,
+            extra_field_ids=extra_field_ids,
+            field_names=field_names,
+            projects=projects,
+        )
+        app.run()
 
-    if app.selected_ticket:
-        save_ticket(app.selected_ticket)
-        click.echo(f"Ticket set to {app.selected_ticket}")
-    else:
-        click.echo("No ticket selected.", err=True)
+        if app.reload_needed:
+            extra_field_ids, field_names = _collect_extra_fields()
+            click.echo("Reloading with updated fields…", err=True)
+            try:
+                issues = fetch_issues_for_projects(jira, projects, max_results, extra_field_ids)
+            except JIRAError as e:
+                raise click.ClickException(f"JIRA API error: {e.text}") from e
+            continue
+
+        if app.selected_ticket:
+            save_ticket(app.selected_ticket)
+            click.echo(f"Ticket set to {app.selected_ticket}")
+        else:
+            click.echo("No ticket selected.", err=True)
+        break
 
 
 @main.command("clear")
@@ -643,6 +1378,26 @@ def _check_not_main_branch() -> None:
             f"You are on '{branch}', which is branch-protected. "
             "Create a feature branch first (e.g. jg branch <name>)."
         )
+
+
+def _get_default_branch() -> str:
+    """Return the default branch name by asking origin, falling back to main/master."""
+    result = subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        # e.g. "refs/remotes/origin/main\n"
+        return result.stdout.strip().split("/")[-1]
+    # Fallback: look for main or master in local branches
+    branches_out = subprocess.run(
+        ["git", "branch"], capture_output=True, text=True,
+    ).stdout
+    local = {b.lstrip("* ").strip() for b in branches_out.splitlines()}
+    for name in ("main", "master"):
+        if name in local:
+            return name
+    return "main"
 
 
 def _get_local_branches() -> list[tuple[str, bool]]:
@@ -1371,19 +2126,32 @@ def cmd_add() -> None:
         click.echo("Aborted.", err=True)
         return
 
+    git_root = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
     if app.to_stage:
-        subprocess.run(["git", "add", "--", *app.to_stage], check=True)
+        subprocess.run(["git", "add", "--", *app.to_stage], check=True, cwd=git_root)
         click.echo(f"Staged {len(app.to_stage)} file(s):")
         for f in sorted(app.to_stage):
             click.echo(f"  + {f}")
 
     if app.to_unstage:
-        subprocess.run(["git", "restore", "--staged", "--", *app.to_unstage], check=True)
+        subprocess.run(["git", "restore", "--staged", "--", *app.to_unstage], check=True, cwd=git_root)
         click.echo(f"Unstaged {len(app.to_unstage)} file(s):")
         for f in sorted(app.to_unstage):
             click.echo(f"  - {f}")
 
     if app.commit_message:
+        branch = _get_current_branch()
+        if branch is None or not branch.lower().startswith(ticket.lower()):
+            suffix = click.prompt(
+                f"Not on a {ticket} branch. Branch suffix (will create {ticket}-<suffix>)"
+            )
+            branch_name = f"{ticket}-{suffix}"
+            click.echo(f"Creating branch: {branch_name}")
+            subprocess.run(["git", "switch", "-C", branch_name], check=True)
         full_msg = f"{ticket} {app.commit_message}"
         subprocess.run(["git", "commit", "--no-verify", "-m", full_msg], check=True)
     elif not app.to_stage and not app.to_unstage:
@@ -1435,6 +2203,75 @@ def cmd_push() -> None:
     if push_url:
         click.echo(f"Opening: {push_url}")
         webbrowser.open(push_url)
+
+
+@main.command("reset")
+def cmd_reset() -> None:
+    """Switch to the main branch and pull latest from origin.
+
+    Offers to stash uncommitted changes if they would block the branch switch.
+    """
+    default_branch = _get_default_branch()
+    current_branch = _get_current_branch()
+    stashed = False
+
+    # --- Switch to default branch if needed ---
+    if current_branch != default_branch:
+        click.echo(f"Switching to {default_branch}…")
+        result = subprocess.run(
+            ["git", "switch", default_branch],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            err = result.stderr.strip()
+            click.echo(err, err=True)
+            # Only offer stash when git says changes would be overwritten
+            is_dirty = "overwritten" in err or "commit your changes or stash" in err
+            if is_dirty and click.confirm(
+                "Stash your local changes and continue?", default=False
+            ):
+                subprocess.run(
+                    ["git", "stash", "--include-untracked"], check=True
+                )
+                stashed = True
+                switch_retry = subprocess.run(
+                    ["git", "switch", default_branch],
+                    capture_output=True, text=True,
+                )
+                if switch_retry.returncode != 0:
+                    raise click.ClickException(
+                        f"Still could not switch to {default_branch}:\n"
+                        + switch_retry.stderr.strip()
+                    )
+            else:
+                raise click.Abort()
+
+    # --- Pull latest ---
+    click.echo(f"Pulling latest from origin/{default_branch}…")
+    pull_result = subprocess.run(["git", "pull", "origin", default_branch])
+    if pull_result.returncode != 0:
+        if stashed:
+            click.echo(
+                "\nYour changes are safely stashed. "
+                "Run 'git stash pop' to restore them.",
+                err=True,
+            )
+        raise click.Abort()
+
+    # --- Offer to restore stash ---
+    if stashed:
+        if click.confirm("Restore your stashed changes?", default=True):
+            pop = subprocess.run(
+                ["git", "stash", "pop"], capture_output=True, text=True
+            )
+            if pop.returncode != 0:
+                click.echo(pop.stdout.strip(), err=True)
+                click.echo(
+                    "Stash pop had conflicts — resolve them, then run 'git stash drop'.",
+                    err=True,
+                )
+            else:
+                click.echo("Stashed changes restored.")
 
 
 @main.command("commit", context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
@@ -1690,9 +2527,9 @@ def config_set(key: str, value: str) -> None:
 
     Standard keys: server, email, token, projects
 
-    Use jql.<PROJECT> to set per-project JQL (overrides the default for that project):
+    Custom fields for the ticket picker: fields.<PROJECT> (comma-separated field IDs)
 
-      jg config set jql.SWY "project = SWY AND sprint in openSprints() AND assignee = currentUser()"
+    Named filters are managed interactively in 'jg set' via the 'f' key.
     """
     set_config(key, value)
     click.echo(f"{key} = {value}")
@@ -1700,7 +2537,7 @@ def config_set(key: str, value: str) -> None:
 
 @cmd_config.command("list")
 def config_list() -> None:
-    """List all config values, including any per-project jql.<PROJECT> keys."""
+    """List all config values and configured named filters."""
     known = [
         ("server",  "JIRA server URL, e.g. https://yourcompany.atlassian.net",              False),
         ("email",   "JIRA account email",                                                    False),
@@ -1716,11 +2553,20 @@ def config_list() -> None:
         else:
             click.echo(f"{key} = (not set)  # {description}")
 
-    project_jqls = {k: v for k, v in config.items() if k.startswith("jql.")}
-    if project_jqls:
+    # Named filters — one section per project
+    filter_projects = sorted({
+        k[len("filters."):] for k in config
+        if k.startswith("filters.") and "." not in k[len("filters."):]
+    })
+    if filter_projects:
         click.echo()
-        for key, value in sorted(project_jqls.items()):
-            click.echo(f"{key} = {value}  # per-project JQL")
+        for proj in filter_projects:
+            filters = get_filters_for_project(proj)
+            default = get_active_filter_name(proj)
+            for f in filters:
+                marker = " (default)" if f["name"] == default else ""
+                click.echo(f"filters.{proj}  {f['name']}{marker}")
+                click.echo(f"  jql: {f['jql']}")
 
 
 
