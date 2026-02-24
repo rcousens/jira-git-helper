@@ -378,6 +378,9 @@ def cmd_push() -> None:
     if result.returncode != 0:
         sys.exit(result.returncode)
 
+    if get_config("open_on_push") != "true":
+        return
+
     push_url: str | None = None
     for line in result.stderr.splitlines():
         if "https://" in line and "github.com" in line:
@@ -388,16 +391,19 @@ def cmd_push() -> None:
             if push_url:
                 break
 
+    current_branch = get_current_branch()
     try:
         jira = get_jira_client()
         issue = jira.issue(ticket, fields=["summary"])
         prs = get_prs(issue.id)
         open_prs = [p for p in prs if p.get("status") == "OPEN"]
-        if open_prs:
-            url = open_prs[0]["url"]
-            click.echo(f"Opening PR: {url}")
-            webbrowser.open(url)
-            return
+        # Only open a PR that matches the branch we just pushed
+        for pr in open_prs:
+            if pr.get("source", {}).get("branch") == current_branch:
+                url = pr["url"]
+                click.echo(f"Opening PR: {url}")
+                webbrowser.open(url)
+                return
     except Exception:
         pass
 
@@ -654,34 +660,14 @@ def cmd_prs(ticket: str | None) -> None:
 
     if app.branch_to_switch:
         branch = app.branch_to_switch
-        local_exists = subprocess.run(
-            ["git", "rev-parse", "--verify", branch],
-            capture_output=True,
-        ).returncode == 0
-
-        if local_exists:
-            result = subprocess.run(["git", "switch", branch], capture_output=True, text=True)
-            if result.returncode == 0:
-                click.echo(f"Switched to branch: {branch}")
-            else:
-                raise click.ClickException(f"Failed to switch to '{branch}':\n{result.stderr.strip()}")
+        # git switch handles both cases:
+        #   - local branch exists → switches to it
+        #   - only remote tracking branch exists → creates local branch tracking the remote
+        result = subprocess.run(["git", "switch", branch], capture_output=True, text=True)
+        if result.returncode == 0:
+            click.echo(f"Switched to branch: {branch}")
         else:
-            default = get_default_branch()
-            click.echo(
-                f"Branch '{branch}' not found locally. Creating from {default}…",
-                err=True,
-            )
-            result = subprocess.run(
-                ["git", "switch", "-c", branch, default],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode == 0:
-                click.echo(f"Created and switched to branch: {branch} (from {default})")
-            else:
-                raise click.ClickException(
-                    f"Failed to create branch '{branch}' from {default}:\n{result.stderr.strip()}"
-                )
+            raise click.ClickException(f"Failed to switch to '{branch}':\n{result.stderr.strip()}")
 
 
 @main.group("config")
@@ -718,6 +704,10 @@ def config_list() -> None:
         ("token",   "JIRA API token",                                                        True),
         ("projects", "Project key(s) for the ticket picker, e.g. SWY or SWY,ABC (optional)", False),
     ]
+    flags = [
+        ("fmt_on_add",    "Run formatters automatically before commit in jg add (true/false)"),
+        ("open_on_push",  "Open PR in browser after jg push (true/false)"),
+    ]
     config = _read_config()
     for key, description, secret in known:
         value = config.get(key)
@@ -726,6 +716,11 @@ def config_list() -> None:
             click.echo(f"{key} = {display}")
         else:
             click.echo(f"{key} = (not set)  # {description}")
+
+    click.echo()
+    for key, description in flags:
+        value = config.get(key, "false")
+        click.echo(f"{key} = {value}  # {description}")
 
     filter_projects = sorted({
         k[len("filters."):] for k in config

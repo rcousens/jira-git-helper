@@ -70,6 +70,7 @@ class FilePickerApp(App):
         Binding("enter", "confirm", "Stage / Commit", show=True),
         Binding("slash", "activate_filter", "Filter", show=True),
         Binding("f", "run_fmt", "Format", show=True),
+        Binding("r", "refresh", "Refresh", show=True),
     ]
 
     def __init__(
@@ -323,7 +324,8 @@ class FilePickerApp(App):
             self._compute_ops()
             self.exit()
             return
-        if get_config("fmt.on_commit") == "true":
+        if get_config("fmt_on_add") == "true":
+            self._pre_fmt_staged = set(self._staged_paths)
             self.push_screen(FmtModal(), self._on_fmt_before_commit)
         else:
             self.push_screen(CommitModal(get_ticket()), self._on_commit_modal)
@@ -333,6 +335,13 @@ class FilePickerApp(App):
         if not self._staged_paths:
             self._compute_ops()
             self.exit()
+            return
+        if set(self._staged_paths) != self._pre_fmt_staged:
+            self.notify(
+                "Formatter modified files — review staging before committing",
+                severity="warning",
+                timeout=6,
+            )
             return
         self.push_screen(CommitModal(get_ticket()), self._on_commit_modal)
 
@@ -345,6 +354,11 @@ class FilePickerApp(App):
     def action_quit(self) -> None:
         self.aborted = True
         self.exit()
+
+    def action_refresh(self) -> None:
+        if isinstance(self.focused, Input):
+            return
+        self._reload_statuses()
 
     def action_run_fmt(self) -> None:
         if isinstance(self.focused, Input):

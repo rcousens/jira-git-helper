@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.22.0
+
+### `jg push` — `open_on_push` config flag and branch-aware PR matching
+
+The post-push PR-opening behaviour is now opt-in via `open_on_push`:
+
+```sh
+jg config set open_on_push true
+```
+
+When enabled, `jg push` looks up open PRs linked to the active ticket and opens only the one matching the current branch. Previously it opened the first open PR found — which could be an unrelated PR against the same ticket from a different branch.
+
+If no matching PR exists, the "Create a pull request" URL from the git push output is opened instead.
+
+### `jg add` — formatter staging drift detection
+
+When `fmt_on_add` is enabled, formatters now run on every commit attempt. If a formatter modifies a staged file (dropping it back to modified), the commit is paused with a warning: "Formatter modified files — review staging before committing". The staging screen stays open so you can re-stage the affected files and try again. On the second attempt, idempotent formatters produce no changes and the commit proceeds normally.
+
+### `jg add` — `r` to refresh git status
+
+Press `r` in the file picker to reload git status and refresh all sections at any time.
+
+### Config flag rename: `fmt.on_commit` → `fmt_on_add`
+
+The auto-formatter config key has been renamed for consistency with the underscore convention used by other flags. Update your config:
+
+```sh
+jg config set fmt_on_add true
+```
+
+### `jg config list` — shows all flags
+
+`jg config list` now displays all boolean flags (`fmt_on_add`, `open_on_push`) with their current value and a description, so they are discoverable without reading docs.
+
+---
+
 ## v0.21.0
 
 ### Shared helpers to reduce TUI and CLI duplication
@@ -36,6 +72,15 @@ eval "$(jg hook --shell bash)"   # or zsh
 ```
 
 Or simply restart your terminal.
+
+### `jg prs` — fix branch switching to use remote tracking
+
+Pressing `s` in `jg prs` to switch to a PR's source branch now uses `git switch` directly, which handles both cases correctly:
+
+- **Branch exists locally** — switches to it.
+- **Branch only exists on a remote** — creates a local tracking branch from the remote (equivalent to `git checkout --track origin/<branch>`).
+
+Previously, when the branch didn't exist locally, `jg prs` would create it from the default branch (`main`/`master`) — discarding the remote branch's history and not setting up tracking.
 
 ---
 

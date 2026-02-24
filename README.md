@@ -92,7 +92,8 @@ Config is stored in `~/.config/jira-git-helper/config`. Use `jg config set/get/l
 |---|---|
 | `projects` | Comma-separated project keys to scope the ticket picker, e.g. `SWY` or `SWY,DOPS` |
 | `fields.<PROJECT>` | Comma-separated JIRA field IDs to show as extra columns in `jg set` (see below) |
-| `fmt.on_commit` | Set to `true` to run formatters automatically before the commit prompt in `jg add` |
+| `fmt_on_add` | Set to `true` to run formatters automatically before the commit prompt in `jg add` |
+| `open_on_push` | Set to `true` to open the matching PR (or new-PR URL) in the browser after `jg push` |
 
 ### Project scoping
 
@@ -445,10 +446,10 @@ The screen is split into sections: **Staged** (always shown), plus **Modified**,
 
 Type a message and press `Enter` to commit. Press `Escape` to skip the commit and just apply the staged changes — useful when you want to stage files now and commit later with `jg commit`.
 
-If `fmt.on_commit` is set to `true` in config, formatters run automatically before the commit prompt opens:
+If `fmt_on_add` is set to `true` in config, formatters run automatically before the commit prompt opens. If a formatter modifies a staged file (dropping it back to modified), the commit is paused and a warning is shown so you can review and re-stage before trying again:
 
 ```sh
-jg config set fmt.on_commit true
+jg config set fmt_on_add true
 ```
 
 > **Note:** If no ticket is set, `jg add` will prompt you to pick one interactively before proceeding.
@@ -528,16 +529,20 @@ Formatter configuration is stored in `~/.config/jira-git-helper/config` under th
 
 ### `jg push`
 
-Push the current branch to origin (`git push -u origin HEAD`) and open the linked
-PR in your browser.
+Push the current branch to origin (`git push -u origin HEAD`).
 
 ```sh
 jg push
 ```
 
-After pushing, `jg push` looks up the active ticket in JIRA to find any linked open
-PR. If found, it opens that PR. If not found but GitHub printed a "Create a pull
-request" URL during the push, it opens that instead.
+When `open_on_push` is enabled, `jg push` looks up open PRs linked to the active
+ticket in JIRA and opens the one matching the current branch. If no matching PR
+exists but GitHub printed a "Create a pull request" URL during the push, it opens
+that instead.
+
+```sh
+jg config set open_on_push true
+```
 
 ---
 
@@ -626,7 +631,7 @@ ones first, then by last-updated date. Status is colour-coded: green (open), yel
 | `/` | Open filter bar — searches status, author, repo, branch, and title |
 | `o` | Open the highlighted PR in your browser |
 | `d` | View the PR diff inline (uses [`delta`](https://github.com/dandavison/delta) if installed) |
-| `s` | Switch to the PR's source branch (creates from default branch if not found locally) |
+| `s` | Switch to the PR's source branch (checks out the remote tracking branch if not found locally) |
 | `Escape` | Close filter / quit |
 
 > **Requires:** [`gh` CLI](https://cli.github.com) installed and authenticated.
