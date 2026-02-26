@@ -79,7 +79,8 @@ All config file and ticket state management. No JIRA or git imports.
 Pure git helpers. No JIRA or TUI imports.
 
 **Key exports**: `get_file_statuses`, `get_current_branch`, `check_not_main_branch`,
-`get_default_branch`, `get_local_branches`, `create_branch`, `copy_to_clipboard`
+`get_default_branch`, `get_ticket_branches`, `create_branch`, `switch_branch`,
+`copy_to_clipboard`
 
 ### `jira_api.py` — JIRA client and API helpers
 
@@ -135,8 +136,8 @@ The main ticket picker and its supporting modals.
 
 ### `tui/branch.py` — branch TUI apps
 
-- `BranchPromptApp` — standalone; shows ticket info + branch suffix input (used when on main)
-- `BranchPickerApp` — DataTable of local branches with filter bar
+- `BranchPromptApp` — standalone; shows ticket info + branch suffix input (used when no matching branches exist or `n` pressed)
+- `BranchPickerApp` — DataTable of local + remote branches with tracking and status columns. Accepts `list[dict]` with keys `name`, `is_current`, `tracking`, `status`. Sets `selected_branch` or `create_new` on exit.
 - `BranchDiffModal` — full-screen diff of branch vs base
 
 ### `tui/file_picker.py` — `jg add` staging screen
@@ -160,7 +161,7 @@ All Click commands live here. TUI modules are imported lazily inside each comman
 **Commands**: `set`, `clear`, `version`, `branch`, `add`, `commit`, `push`, `reset`,
 `sync`, `prune`, `prs`, `info`, `debug`, `open`, `hook`, `setup`
 
-**Command groups**: `fmt` (`add`, `list`, `delete`), `config` (`get`, `set`, `list`)
+**Command groups**: `fmt` (`add`, `edit`, `list`, `delete`, `diff`), `config` (`get`, `set`, `list`)
 
 ---
 
@@ -262,6 +263,46 @@ Style the root label dimly in `_populate_tree` instead:
 tree.root.label = Text("issues", style="#1a3a1a")
 ```
 
+### `priority=True` enter bindings and modals
+
+DataTable has a built-in `enter` → `select_cursor` binding that shadows app-level enter
+bindings, hiding them from the Footer. Fix: add `priority=True` to the app's enter binding.
+
+**Problem**: `priority=True` on an App binding fires even when a ModalScreen is on top.
+If the modal has no `priority=True` enter binding of its own, the App's action runs instead
+of the modal's handler — e.g. selecting a ticket while TicketInfoModal is showing.
+
+**Fix**: guard the App's enter action with `screen_stack > 1` and handle each modal type:
+
+```python
+def action_confirm(self) -> None:
+    if len(self.screen_stack) > 1:
+        top = self.screen
+        if isinstance(top, FmtModal):
+            top.dismiss()
+        elif isinstance(top, CommitModal):
+            msg = top.query_one(Input).value.strip()
+            if msg:
+                top.dismiss(msg)
+        elif isinstance(top, DiffModal):
+            # forward enter to modal's own search logic
+            bar = top.query_one("#search-bar", Input)
+            if bar.display and bar.has_focus:
+                top._commit_search(bar.value)
+            else:
+                top.action_next_match()
+        return
+    # ... normal action logic
+```
+
+**When a modal has its own `priority=True` enter binding** (e.g. FieldPickerModal,
+FilterListModal), the modal's binding wins because screen-level priority bindings are
+checked before app-level ones. No guard needed for those modals — but guard is still
+needed for modals they push (TextInputModal, ConfirmModal) which lack priority bindings.
+
+**Applied in**: `FilePickerApp.action_confirm`, `JiraListApp.action_select_ticket`,
+`PrPickerApp.action_enter_action`.
+
 ### Workers and thread safety
 
 Fetch JIRA data in a thread worker. Update UI via `call_from_thread`:
@@ -339,6 +380,14 @@ create_branch(branch_name, get_default_branch())  # with base
 create_branch(branch_name)                          # from HEAD
 ```
 
+**4. `switch_branch(name)`** in `git.py` — use this in `cli.py` whenever switching to
+an existing branch. It handles the `git switch`, echo, and error reporting:
+
+```python
+from .git import switch_branch
+switch_branch(app.selected_branch)
+```
+
 **When to extract**: if you find the same 3+ line pattern in 3+ places, extract it into
 `theme.py` (TUI patterns), `git.py` (git operations), or the appropriate core module.
 Prefer a plain function for stateless logic; use a mixin when the pattern involves widget
@@ -377,7 +426,7 @@ The hook (emitted by `jg hook`) guarantees:
 
 - **On shell startup**: `JG_TICKET` is always defined after the seed block runs, even if
   the state file is missing or empty. This marks "hook is active".
-- **After `jg set` / `jg branch --all`**: `JG_TICKET` is updated from the state file.
+- **After `jg set`**: `JG_TICKET` is updated from the state file.
 - **After `jg clear`**: `JG_TICKET` is set to `""` (empty string), NOT unset. This is
   the critical invariant — it tells `get_ticket()` to return `None` without reading the
   state file.
@@ -402,8 +451,9 @@ The hook (emitted by `jg hook`) guarantees:
 |---|---|---|
 | `jg set TICKET` | Written by `save_ticket()` | Updated by hook wrapper |
 | `jg clear` | Deleted by `clear_ticket()` | Set to `""` by hook wrapper |
-| `jg branch --all` | Written by `save_ticket()` | Updated by hook wrapper |
 | New shell opens | Read once by seed block | Set from file (or `""` if missing) |
+
+Note: `jg branch --all` was removed in v0.23.0. The hook no longer has a `branch` case.
 
 ---
 

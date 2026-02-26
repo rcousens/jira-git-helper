@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 import subprocess
 import sys
 import webbrowser
@@ -38,8 +37,9 @@ from .git import (
     get_current_branch,
     check_not_main_branch,
     get_default_branch,
-    get_local_branches,
+    get_ticket_branches,
     create_branch,
+    switch_branch,
 )
 from .jira_api import (
     get_jira_server,
@@ -48,6 +48,7 @@ from .jira_api import (
     get_jira_field_name,
     fetch_issues_for_projects,
     get_prs,
+    get_gh_prs,
     STATUS_STYLES,
     PRIORITY_STYLES,
 )
@@ -76,7 +77,10 @@ def main(ctx: click.Context) -> None:
 def cmd_set(ticket: str | None, jql: str | None, max_results: int) -> None:
     """Set the current JIRA ticket, or browse interactively if no ticket given."""
     if ticket:
-        save_ticket(ticket)
+        try:
+            save_ticket(ticket)
+        except ValueError as e:
+            raise click.ClickException(str(e))
         click.echo(f"Ticket set to {ticket}")
         return
 
@@ -170,47 +174,10 @@ def cmd_version() -> None:
 
 @main.command("branch")
 @click.argument("name", required=False)
-@click.option("--all", "show_all", is_flag=True, help="Browse all branches for the configured project and set the active ticket")
-def cmd_branch(name: str | None, show_all: bool) -> None:
+def cmd_branch(name: str | None) -> None:
     """Switch to a ticket branch interactively, or create one with the given name."""
     from .tui.branch import BranchPromptApp, BranchPickerApp
     from .tui.ticket_picker import ensure_ticket
-
-    if show_all and not name:
-        projects = get_projects()
-        if not projects:
-            raise click.ClickException(
-                "No projects configured. Run: jg config set projects MYPROJECT"
-            )
-
-        all_branches = get_local_branches()
-        matching = [
-            (b, cur) for b, cur in all_branches
-            if any(b.upper().startswith(p.upper() + "-") for p in projects)
-        ]
-
-        if not matching:
-            project_list = ", ".join(projects)
-            click.echo(f"No local branches found for projects: {project_list}.")
-            return
-
-        app = BranchPickerApp(matching)
-        app.run()
-
-        if not app.selected_branch:
-            click.echo("No branch selected.", err=True)
-            return
-
-        for project in projects:
-            m = re.match(rf"^({re.escape(project)}-\d+)", app.selected_branch, re.IGNORECASE)
-            if m:
-                ticket_key = m.group(1).upper()
-                save_ticket(ticket_key)
-                click.echo(f"Ticket set to {ticket_key}")
-                break
-
-        subprocess.run(["git", "switch", app.selected_branch], check=True)
-        return
 
     ticket = ensure_ticket()
 
@@ -219,27 +186,31 @@ def cmd_branch(name: str | None, show_all: bool) -> None:
         create_branch(branch_name, get_default_branch())
         return
 
-    if get_current_branch() in ("main", "master"):
+    click.echo("Fetching branches…", err=True)
+    subprocess.run(["git", "fetch", "--prune"], capture_output=True, text=True)
+    branches = get_ticket_branches(ticket)
+
+    if not branches:
         jira_client = get_jira_client()
         prompt_app = BranchPromptApp(ticket, jira_client)
         prompt_app.run()
-        if not prompt_app.branch_suffix:
-            click.echo("Cancelled.", err=True)
-            return
-        branch_name = f"{ticket}-{prompt_app.branch_suffix}"
-        create_branch(branch_name, get_default_branch())
-
-    all_branches = get_local_branches()
-    matching = [(b, cur) for b, cur in all_branches if ticket.lower() in b.lower()]
-
-    if not matching:
+        if prompt_app.branch_suffix:
+            create_branch(f"{ticket}-{prompt_app.branch_suffix}", get_default_branch())
         return
 
-    app = BranchPickerApp(matching)
+    app = BranchPickerApp(branches)
     app.run()
 
+    if app.create_new:
+        jira_client = get_jira_client()
+        prompt_app = BranchPromptApp(ticket, jira_client)
+        prompt_app.run()
+        if prompt_app.branch_suffix:
+            create_branch(f"{ticket}-{prompt_app.branch_suffix}", get_default_branch())
+        return
+
     if app.selected_branch:
-        subprocess.run(["git", "switch", app.selected_branch], check=True)
+        switch_branch(app.selected_branch)
 
 
 @main.command("add")
@@ -349,6 +320,22 @@ def cmd_fmt_list() -> None:
         click.echo(f"  command: {fmt['cmd']}")
 
 
+@cmd_fmt.command("edit")
+@click.argument("name")
+def cmd_fmt_edit(name: str) -> None:
+    """Edit an existing formatter's glob and command."""
+    formatters = get_formatters()
+    fmt = next((f for f in formatters if f["name"] == name), None)
+    if fmt is None:
+        raise click.ClickException(f"No formatter named '{name}'.")
+    glob_pattern = click.prompt("File glob", default=fmt["glob"])
+    cmd = click.prompt("Command", default=fmt["cmd"])
+    fmt["glob"] = glob_pattern
+    fmt["cmd"] = cmd
+    set_formatters(formatters)
+    click.echo(f"Updated formatter '{name}'.")
+
+
 @cmd_fmt.command("delete")
 @click.argument("name")
 def cmd_fmt_delete(name: str) -> None:
@@ -359,6 +346,44 @@ def cmd_fmt_delete(name: str) -> None:
         raise click.ClickException(f"No formatter named '{name}'.")
     set_formatters(new_formatters)
     click.echo(f"Deleted formatter '{name}'.")
+
+
+@cmd_fmt.command("diff")
+def cmd_fmt_diff() -> None:
+    """Run formatters over all files changed between the current branch and the default branch."""
+    from rich.console import Console
+    from .formatters import build_fmt_table
+
+    current = get_current_branch()
+    default_branch = get_default_branch()
+    if current in (None, default_branch, "main", "master"):
+        click.echo(
+            f"On {current or 'detached HEAD'} — nothing to format. "
+            "Switch to a feature branch first.",
+            err=True,
+        )
+        return
+
+    result = subprocess.run(
+        ["git", "diff", "--name-only", "--diff-filter=d", f"{default_branch}...HEAD"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise click.ClickException(
+            f"Failed to get diff against {default_branch}:\n{result.stderr.strip()}"
+        )
+
+    paths = [p for p in result.stdout.splitlines() if p.strip()]
+    if not paths:
+        click.echo(f"No files changed between {default_branch} and {current}.")
+        return
+
+    click.echo(f"Formatting {len(paths)} file(s) changed since {default_branch}…")
+    msg, table = build_fmt_table(paths)
+    if msg == "clean":
+        click.echo("Nothing to format.")
+        return
+    Console().print(table)
 
 
 @main.command("push")
@@ -383,13 +408,12 @@ def cmd_push() -> None:
 
     push_url: str | None = None
     for line in result.stderr.splitlines():
-        if "https://" in line and "github.com" in line:
-            for word in line.split():
-                if word.startswith("https://"):
-                    push_url = word
-                    break
-            if push_url:
+        for word in line.split():
+            if word.startswith("https://") and "/pull/new/" in word:
+                push_url = word
                 break
+        if push_url:
+            break
 
     current_branch = get_current_branch()
     try:
@@ -546,12 +570,7 @@ def cmd_prune() -> None:
         click.echo(f"Deleted {len(app.deleted)} branch(es): {', '.join(app.deleted)}")
 
     if app.branch_to_switch:
-        branch = app.branch_to_switch
-        r = subprocess.run(["git", "switch", branch], capture_output=True, text=True)
-        if r.returncode == 0:
-            click.echo(f"Switched to branch: {branch}")
-        else:
-            raise click.ClickException(f"Failed to switch to '{branch}':\n{r.stderr.strip()}")
+        switch_branch(app.branch_to_switch)
 
 
 @main.command("commit", context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
@@ -650,24 +669,32 @@ def cmd_prs(ticket: str | None) -> None:
     except requests.HTTPError as e:
         raise click.ClickException(f"Failed to fetch PRs: {e}") from e
 
+    for pr in prs:
+        pr["_source"] = "jira"
+
+    # Supplement with GitHub CLI data (silently skipped if gh is unavailable)
+    gh_prs = get_gh_prs(key)
+    for gh_pr in gh_prs:
+        gh_pr["_source"] = "github"
+        prs.append(gh_pr)
+
     if not prs:
         click.echo(f"No PRs linked to {key}.")
         return
 
-    sorted_prs = sorted(prs, key=lambda p: (p.get("status") != "OPEN", p.get("lastUpdate", "")))
+    _src = {"github": 0, "jira": 1}
+    _sts = {"OPEN": 0, "MERGED": 1, "DECLINED": 2}
+    # Sort by lastUpdate desc first (stable sort preserves this within groups)
+    sorted_prs = sorted(prs, key=lambda p: p.get("lastUpdate", ""), reverse=True)
+    sorted_prs.sort(key=lambda p: (
+        _src.get(p.get("_source", "jira"), 9),
+        _sts.get(p.get("status", ""), 9),
+    ))
     app = PrPickerApp(sorted_prs, open_on_enter=True)
     app.run()
 
     if app.branch_to_switch:
-        branch = app.branch_to_switch
-        # git switch handles both cases:
-        #   - local branch exists → switches to it
-        #   - only remote tracking branch exists → creates local branch tracking the remote
-        result = subprocess.run(["git", "switch", branch], capture_output=True, text=True)
-        if result.returncode == 0:
-            click.echo(f"Switched to branch: {branch}")
-        else:
-            raise click.ClickException(f"Failed to switch to '{branch}':\n{result.stderr.strip()}")
+        switch_branch(app.branch_to_switch)
 
 
 @main.group("config")
@@ -773,14 +800,6 @@ function jg
             if test -n "$_jg_ticket"
                 set -gx JG_TICKET $_jg_ticket
             end
-        case branch
-            # Only update JG_TICKET when --all is passed; plain 'jg branch' does not change STATE_FILE
-            if contains -- --all $argv
-                set -l _jg_ticket (cat {STATE_FILE} 2>/dev/null)
-                if test -n "$_jg_ticket"
-                    set -gx JG_TICKET $_jg_ticket
-                end
-            end
         case clear
             set -gx JG_TICKET ""
     end
@@ -811,20 +830,6 @@ jg() {{
             _jg_ticket=$(cat {STATE_FILE} 2>/dev/null)
             if [ -n "$_jg_ticket" ]; then
                 export JG_TICKET="$_jg_ticket"
-            fi
-            ;;
-        branch)
-            # Only update JG_TICKET when --all is passed; plain 'jg branch' does not change STATE_FILE
-            local _jg_has_all=0
-            for _jg_arg in "$@"; do
-                [ "$_jg_arg" = "--all" ] && _jg_has_all=1 && break
-            done
-            if [ "$_jg_has_all" = "1" ]; then
-                local _jg_ticket
-                _jg_ticket=$(cat {STATE_FILE} 2>/dev/null)
-                if [ -n "$_jg_ticket" ]; then
-                    export JG_TICKET="$_jg_ticket"
-                fi
             fi
             ;;
         clear)

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
+
 import click
 import requests
 from jira import JIRA, JIRAError
@@ -153,6 +157,38 @@ def get_prs(issue_id: str) -> list[dict]:
     prs: list[dict] = []
     for detail in r.json().get("detail", []):
         prs.extend(detail.get("pullRequests", []))
+    return prs
+
+
+_GH_STATE_MAP = {"OPEN": "OPEN", "MERGED": "MERGED", "CLOSED": "DECLINED"}
+
+
+def get_gh_prs(ticket: str) -> list[dict]:
+    """Fetch PRs from GitHub CLI matching *ticket* and return in JIRA PR dict shape."""
+    if not shutil.which("gh"):
+        return []
+    result = subprocess.run(
+        ["gh", "pr", "list", "--search", ticket, "--state", "all",
+         "--json", "title,url,author,headRefName,state,updatedAt"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return []
+    try:
+        items = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return []
+    prs: list[dict] = []
+    for item in items:
+        prs.append({
+            "status": _GH_STATE_MAP.get(item.get("state", "").upper(), "OPEN"),
+            "author": {"name": item.get("author", {}).get("login", "")},
+            "repositoryName": "",
+            "source": {"branch": item.get("headRefName", "")},
+            "name": item.get("title", ""),
+            "url": item.get("url", ""),
+            "lastUpdate": item.get("updatedAt", ""),
+        })
     return prs
 
 

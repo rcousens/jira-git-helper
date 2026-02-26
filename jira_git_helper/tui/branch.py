@@ -35,7 +35,7 @@ class BranchPromptApp(App):
     """
 
     BINDINGS = [
-        Binding("escape", "cancel", "Cancel"),
+        Binding("escape", "cancel", "Show ticket branches"),
         Binding("enter", "submit", "Create branch", show=True),
     ]
 
@@ -94,14 +94,27 @@ class BranchPickerApp(FilterBarMixin, App):
 
     BINDINGS = [
         Binding("escape", "quit", "Quit"),
-        Binding("enter", "select_branch", "Switch", show=True),
+        Binding("enter", "select_branch", "Select", show=True, priority=True),
+        Binding("n", "new_branch", "New branch", show=True),
         Binding("slash", "activate_filter", "Filter", show=True),
     ]
 
-    def __init__(self, branches: list[tuple[str, bool]]) -> None:
+    TRACKING_STYLES = {
+        "tracked": "#00ff41",
+        "local": "#ffb300",
+        "remote": "#00e5ff",
+    }
+    STATUS_STYLES = {
+        "never pushed": "#ffb300",
+        "remote deleted": "#ff5555",
+        "remote only": "#00e5ff",
+    }
+
+    def __init__(self, branches: list[dict]) -> None:
         super().__init__()
         self.all_branches = branches
         self.selected_branch: str | None = None
+        self.create_new: bool = False
 
     def compose(self) -> ComposeResult:
         yield Static(context_bar_text(), classes="context-bar")
@@ -113,42 +126,58 @@ class BranchPickerApp(FilterBarMixin, App):
         table = self.query_one(DataTable)
         table.add_column("", width=2)
         table.add_column("Branch")
+        table.add_column("Tracking", width=10)
+        table.add_column("Status", width=16)
         self._populate_table(self.all_branches)
         table.focus()
 
-    def _populate_table(self, branches: list[tuple[str, bool]]) -> None:
+    def _populate_table(self, branches: list[dict]) -> None:
         from rich.text import Text as RichText
 
         table = self.query_one(DataTable)
         table.clear()
-        for branch, is_current in branches:
+        for b in branches:
+            name, is_current = b["name"], b["is_current"]
+            tracking, status = b["tracking"], b["status"]
             marker = RichText("*", style="bold #00ff41") if is_current else RichText("")
-            label  = RichText(branch, style="bold #00e5ff") if is_current else RichText(branch, style="#b8d4b8")
-            table.add_row(marker, label, key=branch)
+            label = RichText(name, style="bold #00e5ff") if is_current else RichText(name, style="#b8d4b8")
+            tracking_text = RichText(tracking, style=self.TRACKING_STYLES.get(tracking, "#b8d4b8"))
+            status_text = RichText(status, style=self.STATUS_STYLES.get(status, "#b8d4b8")) if status else RichText("")
+            table.add_row(marker, label, tracking_text, status_text, key=name)
 
     def on_input_changed(self, event: Input.Changed) -> None:
         search = event.value.lower()
         filtered = [
-            (b, cur) for b, cur in self.all_branches
-            if not search or search in b.lower()
+            b for b in self.all_branches
+            if not search or search in b["name"].lower()
+            or search in b["tracking"].lower() or search in b["status"].lower()
         ]
         self._populate_table(filtered)
 
     def on_key(self, event) -> None:
         if self._handle_filter_keys(event):
             return
-        if event.key == "enter":
-            self.action_select_branch()
-            event.prevent_default()
 
     def _reset_filter(self) -> None:
         self._populate_table(self.all_branches)
 
     def action_select_branch(self) -> None:
+        fb = self.query_one("#filter-bar", Input)
+        if fb.styles.display != "none":
+            self.query_one(DataTable).focus()
+            return
         key = cursor_row_key(self.query_one(DataTable))
         if key:
             self.selected_branch = key
             self.exit()
+
+    def action_new_branch(self) -> None:
+        # Don't trigger when typing in filter bar
+        fb = self.query_one("#filter-bar", Input)
+        if fb.styles.display != "none":
+            return
+        self.create_new = True
+        self.exit()
 
     def action_quit(self) -> None:
         self.exit()

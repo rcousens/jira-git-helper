@@ -202,6 +202,7 @@ class PrPickerApp(FilterBarMixin, App):
 
     BINDINGS = [
         Binding("escape", "quit", "Quit"),
+        Binding("enter", "enter_action", "Open", show=True, priority=True),
         Binding("o", "open_pr", "Open", show=True),
         Binding("d", "show_diff", "Diff", show=True),
         Binding("s", "switch_branch", "Switch branch", show=True),
@@ -223,7 +224,9 @@ class PrPickerApp(FilterBarMixin, App):
 
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
+        table.add_column("Source", width=8)
         table.add_column("Status", width=10)
+        table.add_column("Updated", width=12)
         table.add_column("Author", width=20)
         table.add_column("Repo", width=20)
         table.add_column("Source branch", width=26)
@@ -239,8 +242,14 @@ class PrPickerApp(FilterBarMixin, App):
             status = pr.get("status", "")
             style = PR_STATUS_STYLES.get(status, "white")
             author = pr.get("author", {}).get("name", "")
+            source = pr.get("_source", "jira")
+            source_style = "#00e5ff" if source == "github" else "#ffb300"
+            raw_date = pr.get("lastUpdate", "")
+            updated = raw_date[:10] if raw_date else ""
             table.add_row(
+                RichText(source, style=source_style),
                 RichText(status, style=style),
+                RichText(updated, style="dim"),
                 RichText(author, style="#b39ddb"),
                 RichText(pr.get("repositoryName", ""), style="#ffb300"),
                 RichText(pr.get("source", {}).get("branch", ""), style="#00e5ff"),
@@ -255,7 +264,8 @@ class PrPickerApp(FilterBarMixin, App):
             return
         self._populate_table([
             (i, p) for i, p in enumerate(self.prs)
-            if search in p.get("status", "").lower()
+            if search in p.get("_source", "jira").lower()
+            or search in p.get("status", "").lower()
             or search in p.get("author", {}).get("name", "").lower()
             or search in p.get("repositoryName", "").lower()
             or search in p.get("source", {}).get("branch", "").lower()
@@ -265,9 +275,6 @@ class PrPickerApp(FilterBarMixin, App):
     def on_key(self, event) -> None:
         if self._handle_filter_keys(event):
             return
-        if event.key == "enter" and not self.open_on_enter:
-            self.action_select_pr()
-            event.prevent_default()
 
     def _reset_filter(self) -> None:
         self._populate_table(list(enumerate(self.prs)))
@@ -275,6 +282,25 @@ class PrPickerApp(FilterBarMixin, App):
     def _selected_pr(self) -> dict | None:
         key = cursor_row_key(self.query_one(DataTable))
         return self.prs[int(key)] if key is not None else None
+
+    def action_enter_action(self) -> None:
+        if len(self.screen_stack) > 1:
+            top = self.screen
+            if isinstance(top, DiffModal):
+                bar = top.query_one("#search-bar", Input)
+                if bar.display and bar.has_focus:
+                    top._commit_search(bar.value)
+                else:
+                    top.action_next_match()
+            return
+        fb = self.query_one("#filter-bar", Input)
+        if fb.styles.display != "none":
+            self.query_one(DataTable).focus()
+            return
+        if self.open_on_enter:
+            self.action_open_pr()
+        else:
+            self.action_select_pr()
 
     def action_open_pr(self) -> None:
         if isinstance(self.focused, Input):

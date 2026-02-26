@@ -85,7 +85,7 @@ class JiraListApp(FilterBarMixin, App):
 
     BINDINGS = [
         Binding("escape", "quit", "Quit"),
-        Binding("enter", "select_ticket", "Select", show=True),
+        Binding("enter", "select_ticket", "Select", show=True, priority=True),
         Binding("i", "show_info", "Info", show=True),
         Binding("o", "open_ticket", "Open", show=True),
         Binding("c", "copy_url", "Copy URL", show=True),
@@ -301,10 +301,6 @@ class JiraListApp(FilterBarMixin, App):
                 (self.query_one(Tree) if self._tree_mode else self.query_one(DataTable)).focus()
                 event.prevent_default()
                 return
-            if event.key == "enter":
-                (self.query_one(Tree) if self._tree_mode else self.query_one(DataTable)).focus()
-                event.prevent_default()
-                return
             return
 
         if self._tree_mode:
@@ -318,9 +314,6 @@ class JiraListApp(FilterBarMixin, App):
         # Delegate DataTable-mode keys to mixin
         if self._handle_filter_keys(event):
             return
-        if event.key == "enter":
-            self.action_select_ticket()
-            event.prevent_default()
 
     def _reset_filter(self) -> None:
         if self._tree_mode:
@@ -332,7 +325,18 @@ class JiraListApp(FilterBarMixin, App):
         return cursor_row_key(self.query_one(DataTable))
 
     def action_select_ticket(self) -> None:
+        if len(self.screen_stack) > 1:
+            top = self.screen
+            if isinstance(top, TextInputModal):
+                inp = top.query_one(Input)
+                val = inp.value.strip()
+                if val:
+                    top.dismiss(val)
+            elif isinstance(top, ConfirmModal):
+                top.dismiss(True)
+            return
         if isinstance(self.focused, Input):
+            (self.query_one(Tree) if self._tree_mode else self.query_one(DataTable)).focus()
             return
         key = self._active_key()
         if key:
@@ -440,7 +444,7 @@ class FieldPickerModal(ModalScreen):
 
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
-        Binding("enter", "confirm", "Save & close", show=True),
+        Binding("enter", "confirm", "Save & close", show=True, priority=True),
         Binding("space", "toggle_field", "Toggle", show=True),
     ]
 
@@ -488,9 +492,6 @@ class FieldPickerModal(ModalScreen):
             marker = "✓" if fid in self.selected_ids else " "
             table.update_cell_at(Coordinate(table.cursor_row, 0), marker)
             event.prevent_default()
-        elif event.key == "enter":
-            self.action_confirm()
-            event.prevent_default()
 
     def action_confirm(self) -> None:
         set_config(
@@ -515,6 +516,7 @@ class FilterListModal(ModalScreen):
 
     BINDINGS = [
         Binding("escape", "close_modal", "Close"),
+        Binding("enter", "activate_filter_entry", "Activate", show=True, priority=True),
         Binding("n", "new_filter", "New", show=True),
         Binding("e", "edit_filter", "Edit JQL", show=True),
         Binding("d", "delete_filter", "Delete", show=True),
@@ -566,11 +568,11 @@ class FilterListModal(ModalScreen):
         key = cursor_row_key(self.query_one("#fl-table", DataTable))
         return int(key) if key is not None else None
 
+    def action_activate_filter_entry(self) -> None:
+        self._do_activate()
+
     def on_key(self, event) -> None:
-        if event.key == "enter":
-            self._do_activate()
-            event.prevent_default()
-        elif event.key == "space":
+        if event.key == "space":
             self._do_set_default()
             event.prevent_default()
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 # --- paths ---
@@ -33,7 +34,24 @@ def get_ticket() -> str | None:
     return None
 
 
+def validate_ticket_project(ticket: str) -> None:
+    """Raise ValueError if *ticket* doesn't match a configured project."""
+    projects = get_projects()
+    if not projects:
+        return  # no projects configured — allow anything
+    m = re.match(r"^([A-Za-z][A-Za-z0-9]*)-\d+$", ticket)
+    if not m:
+        raise ValueError(f"Invalid ticket format: {ticket}")
+    prefix = m.group(1).upper()
+    if prefix not in (p.upper() for p in projects):
+        allowed = ", ".join(projects)
+        raise ValueError(
+            f"Ticket {ticket} does not match configured projects ({allowed})"
+        )
+
+
 def save_ticket(ticket: str) -> None:
+    validate_ticket_project(ticket)
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     STATE_FILE.write_text(ticket)
 

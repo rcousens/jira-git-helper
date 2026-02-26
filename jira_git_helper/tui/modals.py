@@ -114,6 +114,11 @@ class FmtModal(ModalScreen):
     #fmt-hint   { color: #4d8a4d; padding-top: 1; }
     """
 
+    BINDINGS = [
+        Binding("enter", "close", show=False, priority=True),
+        Binding("escape", "close", show=False, priority=True),
+    ]
+
     def compose(self) -> ComposeResult:
         with Vertical(id="fmt-outer"):
             yield Label("Format results", id="fmt-title")
@@ -135,6 +140,9 @@ class FmtModal(ModalScreen):
     def _update(self, content) -> None:
         self.query_one("#fmt-content", Static).update(content)
 
+    def action_close(self) -> None:
+        self.dismiss()
+
     def on_key(self, event) -> None:
         self.dismiss()
-        event.prevent_default()
+        event.stop()

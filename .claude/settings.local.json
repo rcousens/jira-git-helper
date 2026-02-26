@@ -6,7 +6,8 @@
       "Bash(uv tool install:*)",
       "Bash(python3:*)",
       "Bash(python:*)",
-      "Bash(jg version:*)"
+      "Bash(jg version:*)",
+      "Bash(jg branch:*)"
     ]
   }
 }

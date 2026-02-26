@@ -153,8 +153,7 @@ The hook does three things:
    don't start from scratch every time).
 2. **Keeps terminals isolated** — `jg set` in one terminal updates only that
    terminal's `JG_TICKET`. Other open terminals are unaffected.
-3. **Updates `JG_TICKET`** after `jg set` or `jg branch --all`, and clears it after
-   `jg clear`.
+3. **Updates `JG_TICKET`** after `jg set`, and clears it after `jg clear`.
 
 Without the hook, all terminals share the same ticket via the state file.
 
@@ -380,7 +379,7 @@ jg open SWY-5678   # open any ticket by key
 
 Work with git branches scoped to the active ticket.
 
-**With no arguments** — if on `main`/`master`, shows a full-screen branch prompt displaying the active ticket's info and a suffix input. After the branch is created, falls through to the interactive branch picker showing all local branches for the ticket (including the new one). If already on a feature branch, opens the branch picker directly.
+**With no arguments** — fetches from origin, then shows an interactive picker with all local and remote branches matching the active ticket. Each branch shows its tracking status (`tracked`, `local`, or `remote`). If no matching branches exist, goes straight to the new branch prompt.
 
 ```sh
 jg branch
@@ -393,29 +392,32 @@ and switches to it.
 jg branch my-feature    # creates SWY-1234-my-feature
 ```
 
-**With `--all`** — shows all local branches matching any of your configured projects,
-regardless of the active ticket. Selecting a branch also sets the active ticket to
-match the ticket key embedded in the branch name.
-
-```sh
-jg branch --all    # requires `projects` to be configured
-```
-
-| Flag | Description |
-|---|---|
-| `--all` | Browse all project branches and update the active ticket to match |
-
-> **Note:** `--all` requires `projects` to be configured.
-> Branch names are expected to follow the `PROJECT-1234-description` convention.
-
 **Interactive picker controls:**
 
 | Key | Action |
 |---|---|
 | `↑` / `↓` | Move between branches |
-| `/` | Open filter bar — type to narrow by branch name |
+| `/` | Open filter bar — type to narrow by branch name or tracking status |
 | `Enter` | Switch to the highlighted branch (or confirm filter and return to list) |
+| `n` | Create a new branch — opens the branch prompt with ticket info and suffix input |
 | `Escape` | Close filter / cancel |
+
+**Tracking column:**
+
+| Value | Colour | Meaning |
+|---|---|---|
+| `tracked` | green | Local branch with remote upstream |
+| `local` | amber | Local-only branch |
+| `remote` | cyan | Remote-only branch (no local checkout) |
+
+**Status column:**
+
+| Value | Colour | Meaning |
+|---|---|---|
+| `never pushed` | amber | Local branch that was never pushed |
+| `remote deleted` | red | Remote upstream was deleted (e.g. after PR merge) |
+| `remote only` | cyan | Exists on remote but no local checkout |
+| *(empty)* | | Healthy tracked branch |
 
 ---
 
@@ -511,6 +513,7 @@ Each formatter has a name, a file glob (matched against the filename), and a com
 ```sh
 jg fmt add                        # interactive prompts for name, glob, and command
 jg fmt add terragrunt-hcl-fmt     # supply the name upfront
+jg fmt edit terragrunt-hcl-fmt    # edit glob and command (current values pre-filled)
 jg fmt list                       # list all configured formatters
 jg fmt delete terragrunt-hcl-fmt  # remove a formatter by name
 ```
@@ -522,6 +525,14 @@ Formatter name: terragrunt-hcl-fmt
 File glob (e.g. *.hcl, *.tf): *.hcl
 Command (use {} for the filename): /usr/local/bin/terragrunt hcl fmt {}
 ```
+
+**Formatting only files changed in the current branch:**
+
+```sh
+jg fmt diff
+```
+
+Runs all formatters over files changed between the current branch and the default branch. Useful before opening a PR to ensure only your changes are formatted, without touching unrelated files. Exits with a warning if run on `main`/`master` or a detached HEAD.
 
 Formatter configuration is stored in `~/.config/jira-git-helper/config` under the `fmt` key and is also visible in `jg config list`.
 
@@ -619,9 +630,7 @@ jg prs             # uses the active ticket
 jg prs SWY-5678    # browse PRs for any ticket
 ```
 
-Columns shown: Status, Author, Repo, Source branch, Title. PRs are sorted with open
-ones first, then by last-updated date. Status is colour-coded: green (open), yellow
-(draft), blue (merged), red (declined).
+PRs are fetched from JIRA and supplemented with GitHub CLI results (if `gh` is installed and authenticated). Columns shown: Source, Status, Author, Repo, Source branch, Title, Updated. PRs are sorted with GitHub PRs first, then open before merged/declined, then by last-updated date. Status is colour-coded: green (open), yellow (draft), blue (merged), red (declined).
 
 **Controls:**
 

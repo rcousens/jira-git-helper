@@ -71,17 +71,65 @@ def get_default_branch() -> str:
     return "main"
 
 
-def get_local_branches() -> list[tuple[str, bool]]:
-    """Return (branch_name, is_current) for all local branches."""
-    result = subprocess.run(["git", "branch"], capture_output=True, text=True)
-    if result.returncode != 0:
-        raise click.ClickException("Not a git repository or git not available.")
-    branches = []
+
+def get_ticket_branches(ticket: str) -> list[dict]:
+    """Return local + remote branches matching ticket.
+
+    Each dict: {name, is_current, tracking, status}.
+    - tracking: "local", "remote", or "tracked"
+    - status: "never pushed", "remote only", "remote deleted", or "" (healthy)
+    """
+    current = get_current_branch()
+    ticket_lower = ticket.lower()
+
+    # Local branches with upstream and tracking state
+    result = subprocess.run(
+        ["git", "for-each-ref",
+         "--format=%(refname:short)\t%(upstream:short)\t%(upstream:track)",
+         "refs/heads/"],
+        capture_output=True, text=True,
+    )
+    # name -> (tracking, status)
+    local_branches: dict[str, tuple[str, str]] = {}
     for line in result.stdout.splitlines():
-        is_current = line.startswith("*")
-        branch = line.lstrip("* ").strip()
-        if branch:
-            branches.append((branch, is_current))
+        parts = line.strip().split("\t")
+        if not parts or not parts[0]:
+            continue
+        branch = parts[0]
+        upstream = parts[1] if len(parts) > 1 else ""
+        track = parts[2] if len(parts) > 2 else ""
+        if ticket_lower not in branch.lower():
+            continue
+        if not upstream:
+            local_branches[branch] = ("local", "never pushed")
+        elif "[gone]" in track:
+            local_branches[branch] = ("local", "remote deleted")
+        else:
+            local_branches[branch] = ("tracked", "")
+
+    # Remote branches
+    result = subprocess.run(
+        ["git", "for-each-ref", "--format=%(refname:short)", "refs/remotes/origin/"],
+        capture_output=True, text=True,
+    )
+    remote_only: list[str] = []
+    for line in result.stdout.splitlines():
+        ref = line.strip()
+        if not ref or ref == "origin/HEAD":
+            continue
+        short = ref.removeprefix("origin/")
+        if ticket_lower in short.lower() and short not in local_branches:
+            remote_only.append(short)
+
+    branches: list[dict] = []
+    for name, (tracking, status) in local_branches.items():
+        branches.append({"name": name, "is_current": name == current,
+                         "tracking": tracking, "status": status})
+    for name in remote_only:
+        branches.append({"name": name, "is_current": False,
+                         "tracking": "remote", "status": "remote only"})
+
+    branches.sort(key=lambda b: (not b["is_current"], b["name"].lower()))
     return branches
 
 
@@ -94,6 +142,15 @@ def create_branch(name: str, base: str | None = None) -> None:
     else:
         click.echo(f"Creating branch: {name}")
     subprocess.run(cmd, check=True)
+
+
+def switch_branch(name: str) -> None:
+    """Switch to *name*, raising ClickException on failure."""
+    result = subprocess.run(["git", "switch", name], capture_output=True, text=True)
+    if result.returncode == 0:
+        click.echo(f"Switched to branch: {name}")
+    else:
+        raise click.ClickException(f"Failed to switch to '{name}':\n{result.stderr.strip()}")
 
 
 def copy_to_clipboard(text: str) -> bool:

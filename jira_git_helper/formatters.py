@@ -59,10 +59,13 @@ def fix_eof(abs_path: str) -> tuple[bool, str]:
         return False, str(e)
 
 
-def build_fmt_table() -> "tuple[str, object]":
+def build_fmt_table(paths: list[str] | None = None) -> "tuple[str, object]":
     """Run all formatters and return (message | None, table | None).
 
-    Returns ("clean", None) if working tree is clean.
+    If *paths* is given, format exactly those files. Otherwise, format all
+    staged, modified, and untracked files from git status.
+
+    Returns ("clean", None) if there are no files to format.
     Otherwise returns (None, rich.table.Table) with all results.
     """
     from rich.table import Table
@@ -70,13 +73,16 @@ def build_fmt_table() -> "tuple[str, object]":
 
     user_formatters = get_formatters()
 
-    staged, modified, deleted, untracked = get_file_statuses()
-    seen: set[str] = set()
-    all_paths: list[str] = []
-    for _, path in staged + modified + untracked:
-        if path not in seen:
-            seen.add(path)
-            all_paths.append(path)
+    if paths is not None:
+        all_paths = paths
+    else:
+        staged, modified, deleted, untracked = get_file_statuses()
+        seen: set[str] = set()
+        all_paths = []
+        for _, path in staged + modified + untracked:
+            if path not in seen:
+                seen.add(path)
+                all_paths.append(path)
 
     if not all_paths:
         return "clean", None

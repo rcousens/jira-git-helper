@@ -1,5 +1,53 @@
 # Changelog
 
+## v0.23.0
+
+### `jg branch` — reworked to show all matching branches with tracking and status
+
+`jg branch` (no args) now fetches from origin, then shows an interactive picker with **all local and remote branches** matching the active ticket. Two new columns show tracking relationship and status:
+
+**Tracking** — `tracked` (green), `local` (amber), `remote` (cyan)
+
+**Status** — `never pushed` (amber), `remote deleted` (red), `remote only` (cyan), or empty for healthy tracked branches
+
+Press `n` to create a new branch (opens the branch prompt with ticket info and suffix input). Selecting a branch switches to it — `git switch` handles both local and remote-tracking branches correctly.
+
+The `--all` flag has been removed. The shell hook's `branch` case (which only fired with `--all`) has been removed accordingly.
+
+### `jg prs` — GitHub CLI supplementation, source column, updated date
+
+`jg prs` now supplements JIRA-linked PRs with results from the GitHub CLI (`gh`). PRs from GitHub are shown alongside JIRA PRs with a source column indicating the origin. An updated date column shows when each PR was last modified.
+
+### `jg fmt diff` — format files changed in the current branch
+
+New subcommand that runs all configured formatters (plus the built-in EOF fixer) over every file changed between the current branch and the default branch (`main`/`master`). Useful for ensuring formatting compliance before opening a PR, without touching unrelated files.
+
+```sh
+jg fmt diff
+```
+
+- Uses `git diff --name-only --diff-filter=d` to find changed files (excludes deleted files)
+- Warns and exits if run on the default branch or detached HEAD
+- Skips binary files, just like `jg fmt`
+
+### `jg fmt edit <name>` — edit a formatter
+
+Edit the glob and command of an existing formatter by name. Current values are pre-filled so you can edit in place.
+
+```sh
+jg fmt edit terragrunt-hcl-fmt
+```
+
+### Footer `Enter` binding now visible across all TUI apps
+
+`Enter` to select/confirm is now shown in the footer of every interactive picker (`jg set`, `jg add`, `jg branch`, `jg prs`). Previously DataTable's built-in enter binding shadowed app-level bindings, hiding them from the footer.
+
+### Modal enter key handling fix
+
+Fixed a bug where pressing `Enter` inside a modal (commit message prompt, formatter results, diff viewer, text input dialogs) would fire the parent app's enter action instead of the modal's own handler. Affected `jg add` (FmtModal and CommitModal), `jg set` (TicketInfoModal, TextInputModal, ConfirmModal), and `jg prs` (DiffModal).
+
+---
+
 ## v0.22.0
 
 ### `jg push` — `open_on_push` config flag and branch-aware PR matching

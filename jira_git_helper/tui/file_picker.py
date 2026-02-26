@@ -67,7 +67,7 @@ class FilePickerApp(App):
     BINDINGS = [
         Binding("escape", "quit", "Cancel"),
         Binding("space", "toggle_select", "Toggle", show=True),
-        Binding("enter", "confirm", "Stage / Commit", show=True),
+        Binding("enter", "confirm", "Stage / Commit", show=True, priority=True),
         Binding("slash", "activate_filter", "Filter", show=True),
         Binding("f", "run_fmt", "Format", show=True),
         Binding("r", "refresh", "Refresh", show=True),
@@ -282,9 +282,6 @@ class FilePickerApp(App):
         elif event.key == "space":
             self.action_toggle_select()
             event.prevent_default()
-        elif event.key == "enter":
-            self.action_confirm()
-            event.prevent_default()
 
     # --- actions ---
 
@@ -320,6 +317,20 @@ class FilePickerApp(App):
         table.move_cursor(row=min(cursor, max(0, table.row_count - 1)))
 
     def action_confirm(self) -> None:
+        if len(self.screen_stack) > 1:
+            top = self.screen
+            if isinstance(top, FmtModal):
+                top.dismiss()
+            elif isinstance(top, CommitModal):
+                msg = top.query_one(Input).value.strip()
+                if msg:
+                    top.dismiss(msg)
+            return
+        if isinstance(self.focused, Input):
+            table = self._focused_table()
+            if table is not None:
+                table.focus()
+            return
         if not self._staged_paths:
             self._compute_ops()
             self.exit()
